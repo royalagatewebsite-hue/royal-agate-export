@@ -1,5 +1,7 @@
+from django.db import models
 from django.db.models import Avg, Count
 from django.shortcuts import get_object_or_404
+from django.utils import timezone
 
 
 from rest_framework import generics, filters
@@ -218,7 +220,11 @@ class AdminReviewStatsView(APIView):
 
         stats = Review.objects.aggregate(
             total_reviews=Count("id"),
-            average_rating=Avg("rating")
+            average_rating=Avg("rating"),
+            unread_reviews=Count(
+                "id",
+                filter=models.Q(read_at__isnull=True)
+            )
         )
 
         return Response({
@@ -226,7 +232,28 @@ class AdminReviewStatsView(APIView):
             "average_rating": round(
                 stats["average_rating"] or 0,
                 2
-            )
+            ),
+            "unread_reviews": stats["unread_reviews"],
+        })
+        
+class AdminMarkReviewsReadView(APIView):
+
+    permission_classes = [
+        IsAuthenticated,
+        IsAdmin
+    ]
+
+    def post(self, request):
+
+        updated_count = Review.objects.filter(
+            read_at__isnull=True
+        ).update(
+            read_at=timezone.now()
+        )
+
+        return Response({
+            "message": "Reviews marked as read.",
+            "updated_count": updated_count
         })
 
 

@@ -9,6 +9,7 @@ from apps.reviews.views import (
     AdminReviewListView,
     AdminReviewDeleteView,
     AdminReviewStatsView,
+    AdminMarkReviewsReadView,
 )
 
 
@@ -63,5 +64,11 @@ urlpatterns = [
         "admin/reviews/<int:pk>/delete/",
         AdminReviewDeleteView.as_view(),
         name="admin-review-delete"
+    ),
+    
+    path(
+        "admin/reviews/mark-read/",
+        AdminMarkReviewsReadView.as_view(),
+        name="admin-reviews-mark-read"
     ),
 ]

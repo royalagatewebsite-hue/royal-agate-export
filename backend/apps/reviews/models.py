@@ -4,6 +4,7 @@ from django.db import models
 from django.db.models import Q
 
 
+
 class Review(models.Model):
 
     class ReviewStatus(models.TextChoices):
@@ -76,6 +77,11 @@ class Review(models.Model):
 
     updated_at = models.DateTimeField(
         auto_now=True
+    )
+    
+    read_at = models.DateTimeField(
+        null=True,
+        blank=True
     )
 
     class Meta:
