@@ -5,7 +5,10 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework import status
 from rest_framework.generics import ListAPIView, RetrieveAPIView
 
-from django.db.models import Q
+from django.db.models import Q, Sum, Count
+from django.db.models.functions import Coalesce
+from decimal import Decimal
+
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.exceptions import ValidationError
 
@@ -345,4 +348,78 @@ class AdminOrderDetailView(RetrieveAPIView):
             Order.objects
             .select_related("user")
             .prefetch_related("items")
+        )
+        
+class AdminDashboardStatsView(APIView):
+
+    permission_classes = [IsAuthenticated, IsAdmin]
+
+    def get(self, request):
+
+        orders = Order.objects.all()
+
+        stats = orders.aggregate(
+            total_orders=Count("id"),
+
+            pending_orders=Count(
+                "id",
+                filter=Q(status=Order.OrderStatus.PENDING)
+            ),
+
+            confirmed_orders=Count(
+                "id",
+                filter=Q(status=Order.OrderStatus.CONFIRMED)
+            ),
+
+            processing_orders=Count(
+                "id",
+                filter=Q(status=Order.OrderStatus.PROCESSING)
+            ),
+
+            shipped_orders=Count(
+                "id",
+                filter=Q(status=Order.OrderStatus.SHIPPED)
+            ),
+
+            delivered_orders=Count(
+                "id",
+                filter=Q(status=Order.OrderStatus.DELIVERED)
+            ),
+
+            cancelled_orders=Count(
+                "id",
+                filter=Q(status=Order.OrderStatus.CANCELLED)
+            ),
+
+            paid_revenue=Coalesce(
+                Sum(
+                    "total_amount",
+                    filter=Q(
+                        payment_status=Order.PaymentStatus.PAID
+                    ) & ~Q(status=Order.OrderStatus.CANCELLED)
+                ),
+                Decimal("0.00")
+            )
+        )
+
+        return Response(stats, status=status.HTTP_200_OK)
+    
+class AdminOrderTimelineView(ListAPIView):
+
+    serializer_class = OrderStatusHistorySerializer
+
+    permission_classes = [IsAuthenticated, IsAdmin]
+
+    def get_queryset(self):
+
+        order = get_object_or_404(
+            Order,
+            pk=self.kwargs["pk"]
+        )
+
+        return (
+            OrderStatusHistory.objects
+            .filter(order=order)
+            .select_related("changed_by")
+            .order_by("created_at", "id")
         )

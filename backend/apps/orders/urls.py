@@ -14,6 +14,8 @@ from .views import (
     CustomerOrderTimelineView,
     AdminOrderListView,
     AdminOrderDetailView,
+    AdminDashboardStatsView,
+    AdminOrderTimelineView
 )
 
 
@@ -107,6 +109,18 @@ urlpatterns = [
         "<int:pk>/timeline/",
         CustomerOrderTimelineView.as_view(),
         name="order-timeline"
+    ),
+    
+    path(
+        "admin/dashboard-stats/",
+        AdminDashboardStatsView.as_view(),
+        name="admin-dashboard-stats",
+    ),
+    
+    path(
+        "admin/<int:pk>/timeline/",
+        AdminOrderTimelineView.as_view(),
+        name="admin-order-timeline",
     ),
 
 ]

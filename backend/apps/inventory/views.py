@@ -1,6 +1,8 @@
 from django.shortcuts import get_object_or_404
 from rest_framework import status, viewsets
-from rest_framework.permissions import IsAdminUser
+from django.db import transaction
+from rest_framework.permissions import IsAuthenticated
+from apps.common.permissions import IsAdmin
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from drf_spectacular.utils import extend_schema
@@ -18,6 +20,8 @@ from apps.inventory.serializers import (
     StockMovementSerializer,
     StockAdjustmentSerializer,
     StockAdjustmentResponseSerializer,
+    InventoryCreateSerializer,
+    InventoryThresholdUpdateSerializer,
 )
 from apps.inventory.services import InventoryService
 
@@ -28,14 +32,16 @@ class AdminInventoryPagination(PageNumberPagination):
     max_page_size = 100
 
 
-class InventoryViewSet(viewsets.ReadOnlyModelViewSet):
+class InventoryViewSet(viewsets.ModelViewSet):
     """
-    Admin-only API to view inventory records.
+    Admin-only API to manage inventory records.
     """
 
     serializer_class = InventorySerializer
-    permission_classes = [IsAdminUser]
+    permission_classes = [IsAuthenticated, IsAdmin]
     pagination_class = AdminInventoryPagination
+
+    http_method_names = ["get", "post", "patch", "head", "options"]
 
     filter_backends = [
         SearchFilter,
@@ -112,6 +118,72 @@ class InventoryViewSet(viewsets.ReadOnlyModelViewSet):
 
         return queryset
 
+    def get_serializer_class(self):
+
+        if self.action == "create":
+            return InventoryCreateSerializer
+
+        if self.action in ["update", "partial_update"]:
+            return InventoryThresholdUpdateSerializer
+
+        return InventorySerializer
+
+    @transaction.atomic
+    def create(self, request, *args, **kwargs):
+
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        product_id = serializer.validated_data["product_id"]
+        quantity = serializer.validated_data["quantity"]
+        threshold = serializer.validated_data["low_stock_threshold"]
+
+        product = Product.objects.get(pk=product_id)
+
+        inventory = Inventory.objects.create(
+            product=product,
+            quantity=0,
+            low_stock_threshold=threshold
+        )
+
+        if quantity > 0:
+            InventoryService.increase_stock(
+                product=product,
+                quantity=quantity,
+                reason="Initial inventory creation",
+                created_by=request.user
+            )
+
+        inventory.refresh_from_db()
+
+        return Response(
+            {
+                "message": "Inventory created successfully.",
+                "inventory": InventorySerializer(inventory).data
+            },
+            status=status.HTTP_201_CREATED
+        )
+
+    def update(self, request, *args, **kwargs):
+
+        if "quantity" in request.data or "product" in request.data:
+            raise ValidationError(
+                "Product and quantity cannot be directly updated. "
+                "Use the stock adjustment endpoint."
+            )
+
+        return super().update(request, *args, **kwargs)
+
+    def partial_update(self, request, *args, **kwargs):
+
+        if "quantity" in request.data or "product" in request.data:
+            raise ValidationError(
+                "Product and quantity cannot be directly updated. "
+                "Use the stock adjustment endpoint."
+            )
+
+        return super().partial_update(request, *args, **kwargs)
+
 
 class StockMovementViewSet(viewsets.ReadOnlyModelViewSet):
     """
@@ -119,7 +191,7 @@ class StockMovementViewSet(viewsets.ReadOnlyModelViewSet):
     """
 
     serializer_class = StockMovementSerializer
-    permission_classes = [IsAdminUser]
+    permission_classes = [IsAuthenticated, IsAdmin]
     pagination_class = AdminInventoryPagination
 
     filter_backends = [
@@ -219,7 +291,7 @@ class StockAdjustmentView(APIView):
     Admin-only API to increase or decrease product stock.
     """
 
-    permission_classes = [IsAdminUser]
+    permission_classes = [IsAuthenticated, IsAdmin]
 
     @extend_schema(
         request=StockAdjustmentSerializer,

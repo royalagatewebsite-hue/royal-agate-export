@@ -19,6 +19,19 @@ from rest_framework.generics import RetrieveUpdateAPIView
 from .serializers import CustomerProfileSerializer
 from .permissions import IsCustomer
 
+from django.contrib.auth import get_user_model
+from django.db.models import Count, Sum, Q, DecimalField, Value
+from django.db.models.functions import Coalesce
+
+
+from .permissions import IsAdmin
+from .serializers import (
+    AdminCustomerListSerializer,
+    AdminCustomerDetailSerializer,
+)
+
+User = get_user_model()
+
 
 class CustomerRegistrationView(generics.CreateAPIView):
 
@@ -80,12 +93,18 @@ class CustomerLoginView(generics.GenericAPIView):
                     "id": user.id,
                     "first_name": user.first_name,
                     "last_name": user.last_name,
-                    "email": user.email
+                    "email": user.email,
+                    "account_type": (
+                        "admin"
+                        if user.groups.filter(name="Admin").exists()
+                        else "customer"
+                    ),
                 },
-                "tokens": tokens
+                "tokens": tokens,
             },
-            status=status.HTTP_200_OK
+            status=status.HTTP_200_OK,
         )
+    
 
 class CustomerTokenRefreshView(TokenRefreshView):
 
@@ -141,3 +160,67 @@ class CustomerProfileView(RetrieveUpdateAPIView):
     def get_object(self):
 
         return self.request.user
+    
+
+class AdminCustomerListView(generics.ListAPIView):
+
+    serializer_class = AdminCustomerListSerializer
+    permission_classes = [IsAuthenticated, IsAdmin]
+
+    def get_queryset(self):
+
+        queryset = (
+            User.objects
+            .filter(groups__name="Customer")
+            .select_related("customer_profile")
+            .annotate(
+                total_orders=Count("orders", distinct=True),
+                total_spent=Coalesce(
+                    Sum("orders__total_amount"),
+                    Value(0),
+                    output_field=DecimalField(
+                        max_digits=14,
+                        decimal_places=2,
+                    ),
+                ),
+            )
+            .order_by("-date_joined")
+        )
+
+        search = self.request.query_params.get("search", "").strip()
+
+        if search:
+            queryset = queryset.filter(
+                Q(first_name__icontains=search)
+                | Q(last_name__icontains=search)
+                | Q(email__icontains=search)
+                | Q(customer_profile__phone_number__icontains=search)
+            )
+
+        return queryset
+
+
+class AdminCustomerDetailView(generics.RetrieveAPIView):
+
+    serializer_class = AdminCustomerDetailSerializer
+    permission_classes = [IsAuthenticated, IsAdmin]
+
+    def get_queryset(self):
+
+        return (
+            User.objects
+            .filter(groups__name="Customer")
+            .select_related("customer_profile")
+            .prefetch_related("orders")
+            .annotate(
+                total_orders=Count("orders", distinct=True),
+                total_spent=Coalesce(
+                    Sum("orders__total_amount"),
+                    Value(0),
+                    output_field=DecimalField(
+                        max_digits=14,
+                        decimal_places=2,
+                    ),
+                ),
+            )
+        )

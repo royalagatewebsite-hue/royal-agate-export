@@ -1,5 +1,5 @@
 from django.contrib import admin
-
+from apps.inventory.services import InventoryService
 from apps.inventory.models import Inventory, StockMovement
 
 
@@ -28,12 +28,48 @@ class InventoryAdmin(admin.ModelAdmin):
     )
 
     readonly_fields = (
-        "quantity",
         "created_at",
         "updated_at",
     )
 
     ordering = ("product__name",)
+
+    def save_model(self, request, obj, form, change):
+
+        target_quantity = obj.quantity
+
+        if change:
+            old_quantity = Inventory.objects.get(
+                pk=obj.pk
+            ).quantity
+
+            obj.quantity = old_quantity
+
+            super().save_model(request, obj, form, change)
+
+        else:
+            old_quantity = 0
+            obj.quantity = 0
+
+            super().save_model(request, obj, form, change)
+
+        difference = target_quantity - old_quantity
+
+        if difference > 0:
+            InventoryService.increase_stock(
+                product=obj.product,
+                quantity=difference,
+                reason="Admin stock adjustment",
+                created_by=request.user,
+            )
+
+        elif difference < 0:
+            InventoryService.decrease_stock(
+                product=obj.product,
+                quantity=abs(difference),
+                reason="Admin stock adjustment",
+                created_by=request.user,
+            )
 
 
 @admin.register(StockMovement)

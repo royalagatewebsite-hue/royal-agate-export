@@ -7,7 +7,8 @@ from apps.reviews.views import (
     CustomerReviewListView,
     CustomerReviewDetailView,
     AdminReviewListView,
-    AdminReviewModerationView,
+    AdminReviewDeleteView,
+    AdminReviewStatsView,
 )
 
 
@@ -44,6 +45,12 @@ urlpatterns = [
         CustomerReviewDetailView.as_view(),
         name="my-review-detail"
     ),
+    
+    path(
+        "admin/reviews/stats/",
+        AdminReviewStatsView.as_view(),
+        name="admin-review-stats"
+    ),
 
     # Admin
     path(
@@ -53,8 +60,8 @@ urlpatterns = [
     ),
 
     path(
-        "admin/reviews/<int:pk>/moderate/",
-        AdminReviewModerationView.as_view(),
-        name="admin-review-moderate"
+        "admin/reviews/<int:pk>/delete/",
+        AdminReviewDeleteView.as_view(),
+        name="admin-review-delete"
     ),
 ]

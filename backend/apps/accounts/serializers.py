@@ -2,6 +2,7 @@ from django.contrib.auth import get_user_model
 from django.contrib.auth.password_validation import validate_password
 from django.db import transaction
 from django.utils.text import slugify
+from django.contrib.auth.models import Group
 
 from django.contrib.auth import authenticate
 from rest_framework_simplejwt.tokens import RefreshToken
@@ -130,8 +131,16 @@ class CustomerRegistrationSerializer(serializers.Serializer):
             user=user,
             phone_number=phone_number
         )
-
+        # Assign Customer role automatically.
+        customer_group, _ = Group.objects.get_or_create(
+                name="Customer"
+        )
+        
+        user.groups.add(customer_group)
+        
         return user
+    
+    
     
 class CustomerLoginSerializer(serializers.Serializer):
 
@@ -292,3 +301,64 @@ class CustomerProfileSerializer(serializers.Serializer):
         )
 
         return instance
+    
+from django.contrib.auth import get_user_model
+from rest_framework import serializers
+
+from apps.orders.models import Order
+
+
+User = get_user_model()
+
+
+class AdminCustomerOrderSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Order
+        fields = [
+            "id",
+            "order_number",
+            "total_amount",
+            "status",
+            "payment_status",
+            "created_at",
+        ]
+
+
+class AdminCustomerListSerializer(serializers.ModelSerializer):
+    phone_number = serializers.SerializerMethodField()
+    total_orders = serializers.IntegerField(read_only=True)
+    total_spent = serializers.DecimalField(
+        max_digits=14,
+        decimal_places=2,
+        read_only=True,
+    )
+
+    class Meta:
+        model = User
+        fields = [
+            "id",
+            "first_name",
+            "last_name",
+            "email",
+            "phone_number",
+            "date_joined",
+            "total_orders",
+            "total_spent",
+        ]
+
+    def get_phone_number(self, obj):
+        profile = getattr(obj, "customer_profile", None)
+        return profile.phone_number if profile else ""
+
+
+class AdminCustomerDetailSerializer(AdminCustomerListSerializer):
+    orders = AdminCustomerOrderSerializer(
+        many=True,
+        read_only=True,
+    )
+
+    class Meta(AdminCustomerListSerializer.Meta):
+        fields = AdminCustomerListSerializer.Meta.fields + [
+            "is_active",
+            "orders",
+        ]

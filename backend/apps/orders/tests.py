@@ -81,7 +81,7 @@ class OrderServiceTests(TestCase):
             full_name="Test Customer",
             phone_number="9876543210",
             address_line_1="123 Test Street",
-            address_line_2="Near Market",
+            district="Ahmedabad",
             city="Ahmedabad",
             state="Gujarat",
             pincode="380001",
@@ -103,6 +103,15 @@ class OrderServiceTests(TestCase):
             user=self.user,
             address_id=self.address.id
         )
+        
+    def mark_order_as_paid(self, order):
+        payment = Payment.objects.get(order=order)
+
+        payment.status = Payment.PaymentStatus.SUCCESS
+        payment.save(update_fields=["status", "updated_at"])
+
+        order.payment_status = Order.PaymentStatus.PAID
+        order.save(update_fields=["payment_status"])
         
         # -----------------------------
     # Order Database Integrity Tests
@@ -400,15 +409,21 @@ class OrderServiceTests(TestCase):
             0
         )
 
-    def test_inventory_not_deducted_during_order_creation(self):
+    def test_inventory_is_deducted_during_order_creation(self):
 
-        self.create_order()
+        order = self.create_order()
 
         self.inventory.refresh_from_db()
+        order.refresh_from_db()
 
+        self.assertEqual(self.inventory.quantity, 98)
+        self.assertIsNotNone(order.stock_deducted_at)
         self.assertEqual(
-            self.inventory.quantity,
-            100
+            StockMovement.objects.filter(
+                inventory=self.inventory,
+                movement_type="DECREASE"
+            ).count(),
+            1
         )
 
     def test_order_creation_failure_rolls_back_everything(self):
@@ -435,6 +450,16 @@ class OrderServiceTests(TestCase):
 
         self.assertEqual(
             Payment.objects.count(),
+            0
+        )
+
+        self.inventory.refresh_from_db()
+        self.assertEqual(self.inventory.quantity, 100)
+        self.assertEqual(
+            StockMovement.objects.filter(
+                inventory=self.inventory,
+                movement_type="DECREASE"
+            ).count(),
             0
         )
 
@@ -748,10 +773,12 @@ class OrderServiceTests(TestCase):
             password="StrongPassword@123"
         )
 
-    def test_successful_order_confirmation_deducts_stock(self):
+    def test_successful_order_confirmation_does_not_deduct_stock_twice(self):
 
         order = self.create_order()
         admin_user = self.create_admin()
+        
+        self.mark_order_as_paid(order)
 
         confirmed_order = OrderService.confirm_order(
             order_id=order.id,
@@ -782,11 +809,44 @@ class OrderServiceTests(TestCase):
             ).count(),
             1
         )
+        
+    def test_unpaid_order_cannot_be_confirmed(self):
+        order = self.create_order()
+        admin_user = self.create_admin()
+
+        self.inventory.refresh_from_db()
+        original_stock = self.inventory.quantity
+
+        with self.assertRaises(ValidationError):
+            OrderService.confirm_order(
+                order_id=order.id,
+                admin_user=admin_user,
+            )
+
+        order.refresh_from_db()
+        self.inventory.refresh_from_db()
+
+        self.assertEqual(
+            order.status,
+            Order.OrderStatus.PENDING,
+        )
+
+        self.assertEqual(
+            order.payment_status,
+            Order.PaymentStatus.PENDING,
+        )
+
+        self.assertEqual(
+            self.inventory.quantity,
+            original_stock,
+        )
 
     def test_order_cannot_be_confirmed_twice(self):
 
         order = self.create_order()
         admin_user = self.create_admin()
+        
+        self.mark_order_as_paid(order)
 
         OrderService.confirm_order(
             order_id=order.id,
@@ -815,39 +875,24 @@ class OrderServiceTests(TestCase):
         )
 
     
-    def test_confirmation_fails_when_stock_is_insufficient(self):
+    def test_order_creation_fails_when_stock_is_insufficient(self):
 
-        # First create order while sufficient stock exists
-        order = self.create_order()
-        admin_user = self.create_admin()
-
-        # Now reduce stock after order creation
         self.inventory.quantity = 1
         self.inventory.save()
 
         with self.assertRaises(ValidationError):
-            OrderService.confirm_order(
-                order_id=order.id,
-                admin_user=admin_user
-            )
+            self.create_order()
 
-        order.refresh_from_db()
         self.inventory.refresh_from_db()
 
+        self.assertEqual(self.inventory.quantity, 1)
+        self.assertEqual(Order.objects.filter(user=self.user).count(), 0)
+        self.assertEqual(OrderItem.objects.count(), 0)
+        self.assertEqual(Payment.objects.count(), 0)
         self.assertEqual(
-            order.status,
-            Order.OrderStatus.PENDING
-        )
-
-        self.assertIsNone(
-            order.stock_deducted_at
-        )
-
-        self.assertEqual(
-            self.inventory.quantity,
+            CartItem.objects.filter(cart=self.cart).count(),
             1
         )
-
         self.assertEqual(
             StockMovement.objects.filter(
                 inventory=self.inventory,
@@ -857,13 +902,8 @@ class OrderServiceTests(TestCase):
         )
 
 
+    def test_order_creation_rolls_back_all_stock_deductions_if_later_product_fails(self):
 
-    def test_confirmation_failure_rolls_back_all_stock_deductions(self):
-
-        order = self.create_order()
-        admin_user = self.create_admin()
-
-        # Create another product with insufficient stock
         second_product = Product.objects.create(
             name="Emerald Stone",
             sku="EMERALD-001",
@@ -871,25 +911,64 @@ class OrderServiceTests(TestCase):
             retail_price=Decimal("200.00"),
             selling_modes=["RETAIL"]
         )
-
         second_inventory = Inventory.objects.create(
             product=second_product,
-            quantity=1,
+            quantity=100,
             low_stock_threshold=5
         )
-
-        # Add second order item directly.
-        # This simulates stock becoming insufficient after order creation.
-        OrderItem.objects.create(
-            order=order,
+        CartItem.objects.create(
+            cart=self.cart,
             product=second_product,
-            product_name=second_product.name,
-            product_sku=second_product.sku,
             purchase_mode="RETAIL",
-            quantity=2,
-            unit_price=Decimal("200.00"),
-            subtotal=Decimal("400.00")
+            quantity=2
         )
+
+        from apps.inventory.services import InventoryService
+
+        original_decrease_stock = InventoryService.decrease_stock
+        call_count = {"value": 0}
+
+        def fail_on_second_product(*args, **kwargs):
+            call_count["value"] += 1
+            if call_count["value"] == 2:
+                raise RuntimeError("Simulated second inventory deduction failure")
+            return original_decrease_stock(*args, **kwargs)
+
+        with patch(
+            "apps.orders.services.InventoryService.decrease_stock",
+            side_effect=fail_on_second_product
+        ):
+            with self.assertRaises(RuntimeError):
+                self.create_order()
+
+        self.inventory.refresh_from_db()
+        second_inventory.refresh_from_db()
+
+        self.assertEqual(self.inventory.quantity, 100)
+        self.assertEqual(second_inventory.quantity, 100)
+        self.assertEqual(Order.objects.filter(user=self.user).count(), 0)
+        self.assertEqual(OrderItem.objects.count(), 0)
+        self.assertEqual(Payment.objects.count(), 0)
+        self.assertEqual(
+            CartItem.objects.filter(cart=self.cart).count(),
+            2
+        )
+        self.assertEqual(
+            StockMovement.objects.filter(movement_type="DECREASE").count(),
+            0
+        )
+
+
+    def test_confirmation_fails_if_product_no_longer_exists(self):
+
+        order = self.create_order()
+        admin_user = self.create_admin()
+
+        # Simulate a missing product reference on the order item.
+        OrderItem.objects.filter(
+            order=order,
+            product=self.product
+        ).update(product=None)
 
         with self.assertRaises(ValidationError):
             OrderService.confirm_order(
@@ -899,60 +978,15 @@ class OrderServiceTests(TestCase):
 
         order.refresh_from_db()
         self.inventory.refresh_from_db()
-        second_inventory.refresh_from_db()
-
-        # First product deduction must also roll back
-        self.assertEqual(
-            self.inventory.quantity,
-            100
-        )
-
-        self.assertEqual(
-            second_inventory.quantity,
-            1
-        )
 
         self.assertEqual(
             order.status,
             Order.OrderStatus.PENDING
         )
 
-        self.assertIsNone(
-            order.stock_deducted_at
-        )
-
-        self.assertEqual(
-            StockMovement.objects.filter(
-                movement_type="DECREASE"
-            ).count(),
-            0
-        )
-
-    def test_confirmation_fails_if_product_no_longer_exists(self):
-
-        order = self.create_order()
-        admin_user = self.create_admin()
-
-        # Delete product; OrderItem.product uses SET_NULL
-        self.product.delete()
-
-        with self.assertRaises(ValidationError):
-            OrderService.confirm_order(
-                order_id=order.id,
-                admin_user=admin_user
-            )
-
-        order.refresh_from_db()
-
-        self.assertEqual(
-            order.status,
-            Order.OrderStatus.PENDING
-        )
-
-        self.assertIsNone(
-            order.stock_deducted_at
-        )
-        
+        # Stock was already deducted when the order was created.
+        self.assertIsNotNone(order.stock_deducted_at)
+        self.assertEqual(self.inventory.quantity, 98)
     
     # -----------------------------
     # Admin Order Confirmation API Tests
@@ -962,6 +996,8 @@ class OrderServiceTests(TestCase):
 
         order = self.create_order()
         admin_user = self.create_admin()
+        
+        self.mark_order_as_paid(order)
 
         self.client.force_authenticate(user=admin_user)
 
@@ -1015,7 +1051,7 @@ class OrderServiceTests(TestCase):
 
         self.assertEqual(
             self.inventory.quantity,
-            100
+            98
         )
 
     def test_unauthenticated_user_cannot_confirm_order(self):
@@ -1054,6 +1090,8 @@ class OrderServiceTests(TestCase):
 
         order = self.create_order()
         admin_user = self.create_admin()
+        
+        self.mark_order_as_paid(order)
 
         self.client.force_authenticate(user=admin_user)
 
@@ -1117,6 +1155,8 @@ class OrderServiceTests(TestCase):
 
         order = self.create_order()
         admin_user = self.create_admin()
+        
+        self.mark_order_as_paid(order)
 
         OrderService.confirm_order(order.id, admin_user)
 
@@ -1145,6 +1185,8 @@ class OrderServiceTests(TestCase):
 
         order = self.create_order()
         admin_user = self.create_admin()
+        
+        self.mark_order_as_paid(order)
 
         OrderService.confirm_order(order.id, admin_user)
 
@@ -1190,6 +1232,8 @@ class OrderServiceTests(TestCase):
 
         order = self.create_order()
         admin_user = self.create_admin()
+        
+        self.mark_order_as_paid(order)
 
         OrderService.confirm_order(order.id, admin_user)
 
@@ -1230,6 +1274,8 @@ class OrderServiceTests(TestCase):
 
         order = self.create_order()
         admin_user = self.create_admin()
+        
+        self.mark_order_as_paid(order)
 
         OrderService.confirm_order(order.id, admin_user)
 
@@ -1310,6 +1356,8 @@ class OrderServiceTests(TestCase):
 
         order = self.create_order()
         admin_user = self.create_admin()
+        
+        self.mark_order_as_paid(order)
 
         OrderService.confirm_order(order.id, admin_user)
 
@@ -1373,6 +1421,8 @@ class OrderServiceTests(TestCase):
 
         order = self.create_order()
         admin_user = self.create_admin()
+        
+        self.mark_order_as_paid(order)
 
         OrderService.confirm_order(order.id, admin_user)
 
@@ -1528,6 +1578,8 @@ class OrderServiceTests(TestCase):
 
         order = self.create_order()
         admin_user = self.create_admin()
+
+        self.mark_order_as_paid(order)
 
         OrderService.confirm_order(
             order_id=order.id,
@@ -1758,6 +1810,8 @@ class OrderServiceTests(TestCase):
     def test_confirmed_order_can_move_to_processing(self):
         order = self.create_order()
         admin = self.create_admin()
+        
+        self.mark_order_as_paid(order)
 
         OrderService.confirm_order(order.id, admin)
 
@@ -1789,6 +1843,8 @@ class OrderServiceTests(TestCase):
     def test_processing_order_can_move_to_shipped(self):
         order = self.create_order()
         admin = self.create_admin()
+        
+        self.mark_order_as_paid(order)
 
         OrderService.confirm_order(order.id, admin)
 
@@ -1845,6 +1901,8 @@ class OrderServiceTests(TestCase):
     def test_confirmed_order_cannot_move_directly_to_shipped(self):
         order = self.create_order()
         admin = self.create_admin()
+        
+        self.mark_order_as_paid(order)
 
         OrderService.confirm_order(order.id, admin)
 
@@ -1865,6 +1923,8 @@ class OrderServiceTests(TestCase):
     def test_status_update_blocked_when_cancellation_is_pending(self):
         order = self.create_order()
         admin = self.create_admin()
+        
+        self.mark_order_as_paid(order)
 
         OrderService.confirm_order(order.id, admin)
 
@@ -1891,6 +1951,8 @@ class OrderServiceTests(TestCase):
     def test_shipped_order_cannot_move_to_processing(self):
         order = self.create_order()
         admin = self.create_admin()
+        
+        self.mark_order_as_paid(order)
 
         OrderService.confirm_order(order.id, admin)
 
@@ -1928,6 +1990,8 @@ class OrderServiceTests(TestCase):
 
         order = self.create_order()
         admin = self.create_admin()
+        
+        self.mark_order_as_paid(order)
 
         OrderService.confirm_order(order.id, admin)
 
@@ -1972,6 +2036,8 @@ class OrderServiceTests(TestCase):
 
         order = self.create_order()
         admin = self.create_admin()
+        
+        self.mark_order_as_paid(order)
 
         OrderService.confirm_order(order.id, admin)
 
@@ -2063,6 +2129,8 @@ class OrderServiceTests(TestCase):
 
         order = self.create_order()
         admin = self.create_admin()
+        
+        self.mark_order_as_paid(order)
 
         self.client.force_authenticate(user=admin)
 
@@ -2087,6 +2155,8 @@ class OrderServiceTests(TestCase):
 
         order = self.create_order()
         admin = self.create_admin()
+        
+        self.mark_order_as_paid(order)
 
         OrderService.confirm_order(order.id, admin)
 
@@ -2095,6 +2165,8 @@ class OrderServiceTests(TestCase):
             order.id,
             "Customer requested cancellation."
         )
+        
+        self.mark_order_as_paid(order)
 
         self.client.force_authenticate(user=admin)
 
@@ -2119,6 +2191,8 @@ class OrderServiceTests(TestCase):
 
         order = self.create_order()
         admin = self.create_admin()
+        
+        self.mark_order_as_paid(order)
 
         OrderService.confirm_order(order.id, admin)
 
@@ -2172,6 +2246,8 @@ class OrderServiceTests(TestCase):
     def test_customer_can_view_own_order_timeline(self):
 
         order = self.create_order()
+        
+        self.mark_order_as_paid(order)
 
         self.client.force_authenticate(user=self.user)
 
@@ -2192,6 +2268,8 @@ class OrderServiceTests(TestCase):
 
         order = self.create_order()
         admin = self.create_admin()
+        
+        self.mark_order_as_paid(order)
 
         OrderService.confirm_order(order.id, admin)
 

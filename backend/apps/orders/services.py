@@ -40,7 +40,7 @@ class OrderService:
     @staticmethod
     @transaction.atomic
     def create_order(user, address_id, notes=""):
-        # 1. Validate checkout.
+        # 1. Validate checkout and lock cart, products and inventory.
         checkout_data = CartService.validate_checkout(
             user=user,
             address_id=address_id,
@@ -55,14 +55,15 @@ class OrderService:
             f"{uuid.uuid4().hex[:12].upper()}"
         )
 
-        # 3. Create order with a shipping-address snapshot.
+        # 3. Create order with a permanent shipping snapshot.
         order = Order.objects.create(
             order_number=order_number,
             user=user,
             shipping_full_name=address.full_name,
             shipping_phone_number=address.phone_number,
             shipping_address_line_1=address.address_line_1,
-            shipping_address_line_2=address.address_line_2,
+            shipping_address_line_2="",
+            shipping_district=address.district,
             shipping_city=address.city,
             shipping_state=address.state,
             shipping_pincode=address.pincode,
@@ -76,16 +77,7 @@ class OrderService:
             notes=notes,
         )
 
-        # 4. Record the initial order status.
-        OrderService.record_status_history(
-            order=order,
-            previous_status="",
-            new_status=Order.OrderStatus.PENDING,
-            changed_by=user,
-            note="Order placed successfully.",
-        )
-
-        # 5. Create order items with purchase-time snapshots.
+        # 4. Create order items using purchase-time snapshots.
         order_items = []
 
         for item_data in checkout_data["items"]:
@@ -106,14 +98,54 @@ class OrderService:
 
         OrderItem.objects.bulk_create(order_items)
 
-        # 6. Create the initial payment record.
+        # 5. Deduct combined stock once per product.
+        product_quantities = {}
+
+        for item_data in checkout_data["items"]:
+            cart_item = item_data["cart_item"]
+            product_id = cart_item.product_id
+
+            if product_id not in product_quantities:
+                product_quantities[product_id] = {
+                    "product": cart_item.product,
+                    "quantity": 0,
+                }
+
+            product_quantities[product_id]["quantity"] += (
+                cart_item.quantity
+            )
+
+        for product_id in sorted(product_quantities):
+            stock_data = product_quantities[product_id]
+
+            InventoryService.decrease_stock(
+                product=stock_data["product"],
+                quantity=stock_data["quantity"],
+                reason=f"Stock deducted for order {order.order_number}",
+                created_by=user,
+            )
+
+        # 6. Record stock deduction time.
+        order.stock_deducted_at = timezone.now()
+        order.save(update_fields=["stock_deducted_at", "updated_at"])
+
+        # 7. Record initial order status.
+        OrderService.record_status_history(
+            order=order,
+            previous_status="",
+            new_status=Order.OrderStatus.PENDING,
+            changed_by=user,
+            note="Order placed successfully. Stock reserved.",
+        )
+
+        # 8. Create initial payment record.
         Payment.objects.create(
             order=order,
             amount=order.total_amount,
             status=Payment.PaymentStatus.PENDING,
         )
 
-        # 7. Clear the cart only after successful order creation.
+        # 9. Clear cart only after successful order creation.
         cart.items.all().delete()
 
         return order
@@ -135,11 +167,12 @@ class OrderService:
             raise ValidationError(
                 "Only pending orders can be confirmed."
             )
+            
 
-        # 3. Prevent duplicate stock deduction.
-        if order.stock_deducted_at is not None:
+        # 3. Prevent confirmation if stock was already restored.
+        if order.stock_restored_at is not None:
             raise ValidationError(
-                "Stock has already been deducted for this order."
+                "Stock has already been restored for this order."
             )
 
         # 4. Retrieve order items in consistent product order.
@@ -161,7 +194,7 @@ class OrderService:
             if item.product_id is not None
         })
 
-        # 6. Lock all products in ascending ID order.
+        # 6. Lock all existing products in ascending ID order.
         products = Product.objects.select_for_update().filter(
             id__in=product_ids
         ).order_by("id")
@@ -171,9 +204,7 @@ class OrderService:
             for product in products
         }
 
-        previous_status = order.status
-
-        # 7. Deduct stock in consistent product order.
+        # 7. Validate that every order item still has a product.
         for item in order_items:
 
             product = product_map.get(item.product_id)
@@ -184,16 +215,29 @@ class OrderService:
                     "no longer exists."
                 )
 
-            InventoryService.decrease_stock(
-                product=product,
-                quantity=item.quantity,
-                reason=f"Stock deducted for order {order.order_number}",
-                created_by=admin_user,
-            )
+        previous_status = order.status
 
-        # 8. Update order status and stock-deduction timestamp.
+        # 8. Deduct stock only for legacy orders.
+        # New orders already have stock deducted during placement.
+        if order.stock_deducted_at is None:
+
+            for item in order_items:
+
+                product = product_map[item.product_id]
+
+                InventoryService.decrease_stock(
+                    product=product,
+                    quantity=item.quantity,
+                    reason=(
+                        f"Stock deducted for order {order.order_number}"
+                    ),
+                    created_by=admin_user,
+                )
+
+            order.stock_deducted_at = timezone.now()
+
+        # 9. Update order status.
         order.status = Order.OrderStatus.CONFIRMED
-        order.stock_deducted_at = timezone.now()
 
         order.save(
             update_fields=[
@@ -203,7 +247,7 @@ class OrderService:
             ]
         )
 
-        # 9. Record status history.
+        # 10. Record status history.
         OrderService.record_status_history(
             order=order,
             previous_status=previous_status,
@@ -213,7 +257,8 @@ class OrderService:
         )
 
         return order
-
+    
+    
     @staticmethod
     @transaction.atomic
     def request_cancellation(user, order_id, reason):
@@ -240,6 +285,53 @@ class OrderService:
             cancellation_status = (
                 OrderCancellation.CancellationStatus.DIRECT_CANCELLED
             )
+
+            # Restore stock if it was deducted at order placement.
+            if (
+                order.stock_deducted_at is not None
+                and order.stock_restored_at is None
+            ):
+                order_items = list(
+                    OrderItem.objects
+                    .select_related("product")
+                    .filter(order=order)
+                    .order_by("product_id", "pk")
+                )
+
+                product_quantities = {}
+
+                for item in order_items:
+                    if item.product_id is None:
+                        raise ValidationError(
+                            f"Product for order item '{item.product_name}' "
+                            "no longer exists."
+                        )
+
+                    if item.product_id not in product_quantities:
+                        product_quantities[item.product_id] = {
+                            "product": item.product,
+                            "quantity": 0,
+                        }
+
+                    product_quantities[item.product_id]["quantity"] += (
+                        item.quantity
+                    )
+
+                for product_id in sorted(product_quantities):
+                    stock_data = product_quantities[product_id]
+
+                    InventoryService.increase_stock(
+                        product=stock_data["product"],
+                        quantity=stock_data["quantity"],
+                        reason=(
+                            f"Stock restored for cancelled order "
+                            f"{order.order_number}"
+                        ),
+                        created_by=user,
+                    )
+
+                order.stock_restored_at = timezone.now()
+
             order.status = Order.OrderStatus.CANCELLED
 
         elif order.status in [
@@ -273,7 +365,7 @@ class OrderService:
 
         # 5. Save and record direct cancellation only.
         if order.status == Order.OrderStatus.CANCELLED:
-            order.save(update_fields=["status", "updated_at"])
+            order.save(update_fields=["status","stock_restored_at", "updated_at"])
 
             OrderService.record_status_history(
                 order=order,
@@ -463,8 +555,13 @@ class OrderService:
             Order.OrderStatus.CONFIRMED: [
                 Order.OrderStatus.PROCESSING,
             ],
+
             Order.OrderStatus.PROCESSING: [
                 Order.OrderStatus.SHIPPED,
+            ],
+
+            Order.OrderStatus.SHIPPED: [
+                Order.OrderStatus.DELIVERED,
             ],
         }
 
@@ -491,6 +588,10 @@ class OrderService:
         if new_status == Order.OrderStatus.SHIPPED:
             order.shipped_at = timezone.now()
             update_fields.append("shipped_at")
+
+        elif new_status == Order.OrderStatus.DELIVERED:
+            order.delivered_at = timezone.now()
+            update_fields.append("delivered_at")
 
         order.save(update_fields=update_fields)
 

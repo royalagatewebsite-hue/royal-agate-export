@@ -6,9 +6,10 @@ class IsCustomer(BasePermission):
 
     def has_permission(self, request, view):
         return (
-            request.user
-            and request.user.is_authenticated
-            and not request.user.is_staff
+            request.user.is_authenticated
+            and request.user.groups.filter(
+                name="Customer"
+            ).exists()
         )
 
 
@@ -17,7 +18,8 @@ class IsAdmin(BasePermission):
 
     def has_permission(self, request, view):
         return (
-            request.user
-            and request.user.is_authenticated
-            and request.user.is_staff
+            request.user.is_authenticated
+            and request.user.groups.filter(
+                name="Admin"
+            ).exists()
         )

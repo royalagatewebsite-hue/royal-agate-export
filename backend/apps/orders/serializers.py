@@ -48,6 +48,7 @@ class OrderSerializer(serializers.ModelSerializer):
             "shipping_phone_number",
             "shipping_address_line_1",
             "shipping_address_line_2",
+            "shipping_district",
             "shipping_city",
             "shipping_state",
             "shipping_pincode",
@@ -60,6 +61,7 @@ class OrderSerializer(serializers.ModelSerializer):
             "items",
             "created_at",
             "shipped_at",
+            "delivered_at",
             "updated_at",
         ]
         read_only_fields = fields

@@ -1,10 +1,30 @@
 from pathlib import Path
 import environ
+import cloudinary
 from datetime import timedelta
 
 BASE_DIR = Path(__file__).resolve().parents[2]
+
 env = environ.Env()
 environ.Env.read_env(BASE_DIR / ".env")
+
+# Cloudinary Configuration
+CLOUDINARY_CLOUD_NAME = env("CLOUDINARY_CLOUD_NAME")
+CLOUDINARY_API_KEY = env("CLOUDINARY_API_KEY")
+CLOUDINARY_API_SECRET = env("CLOUDINARY_API_SECRET")
+
+# Razorpay Configuration
+RAZORPAY_KEY_ID = env("RAZORPAY_KEY_ID", default="")
+RAZORPAY_KEY_SECRET = env("RAZORPAY_KEY_SECRET", default="")
+RAZORPAY_WEBHOOK_SECRET = env("RAZORPAY_WEBHOOK_SECRET", default="")
+
+cloudinary.config(
+    cloud_name=CLOUDINARY_CLOUD_NAME,
+    api_key=CLOUDINARY_API_KEY,
+    api_secret=CLOUDINARY_API_SECRET,
+    secure=True,
+)
+
 
 SECRET_KEY = env("DJANGO_SECRET_KEY")
 DEBUG = env.bool("DJANGO_DEBUG", default=False)
@@ -101,4 +121,5 @@ SPECTACULAR_SETTINGS = {
     "TITLE": "Royal Agate Export API",
     "DESCRIPTION": "REST API for Royal Agate Export.",
     "VERSION": "1.0.0",
+    "COMPONENT_SPLIT_REQUEST": True,
 }

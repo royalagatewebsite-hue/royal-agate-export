@@ -111,10 +111,7 @@ class CustomerAddress(models.Model):
 
     address_line_1 = models.CharField(max_length=255)
 
-    address_line_2 = models.CharField(
-        max_length=255,
-        blank=True
-    )
+    district = models.CharField(max_length=100)
 
     city = models.CharField(max_length=100)
 

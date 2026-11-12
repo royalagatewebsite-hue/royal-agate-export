@@ -6,6 +6,8 @@ from .views import (
     CustomerTokenRefreshView,
     CustomerLogoutView,
     CustomerProfileView,
+    AdminCustomerListView,
+    AdminCustomerDetailView,
 )
 
 
@@ -38,5 +40,17 @@ urlpatterns = [
         "profile/",
         CustomerProfileView.as_view(),
         name="customer-profile"
+    ),
+    
+    path(
+        "admin/customers/",
+        AdminCustomerListView.as_view(),
+        name="admin-customer-list",
+    ),
+
+    path(
+        "admin/customers/<int:pk>/",
+        AdminCustomerDetailView.as_view(),
+        name="admin-customer-detail",
     ),
 ]

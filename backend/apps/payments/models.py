@@ -1,4 +1,5 @@
 from decimal import Decimal
+from django.conf import settings
 
 from django.core.validators import MinValueValidator
 from django.db import models
@@ -19,7 +20,7 @@ class Payment(models.Model):
         FAILED = "FAILED", "Failed"
         CANCELLED = "CANCELLED", "Cancelled"
 
-    order = models.ForeignKey(
+    order = models.OneToOneField(
         "orders.Order",
         on_delete=models.PROTECT,
         related_name="payments"
@@ -90,6 +91,93 @@ class Payment(models.Model):
     def __str__(self):
         return f"Payment - {self.order.order_number}"
     
+
+class PaymentAttempt(models.Model):
+
+    class AttemptStatus(models.TextChoices):
+        INITIATED = "INITIATED", "Initiated"
+        SUCCESS = "SUCCESS", "Success"
+        FAILED = "FAILED", "Failed"
+        CANCELLED = "CANCELLED", "Cancelled"
+
+    payment = models.ForeignKey(
+        Payment,
+        on_delete=models.PROTECT,
+        related_name="attempts",
+    )
+
+    attempt_number = models.PositiveIntegerField()
+
+    payment_method = models.CharField(
+        max_length=30,
+        choices=Payment.PaymentMethod.choices,
+    )
+
+    status = models.CharField(
+        max_length=20,
+        choices=AttemptStatus.choices,
+        default=AttemptStatus.INITIATED,
+    )
+
+    idempotency_key = models.CharField(
+        max_length=100,
+        unique=True,
+    )
+
+    transaction_id = models.CharField(
+        max_length=255,
+        blank=True,
+    )
+
+    gateway_order_id = models.CharField(
+        max_length=255,
+        blank=True,
+    )
+
+    gateway_payment_id = models.CharField(
+        max_length=255,
+        blank=True,
+    )
+
+    failure_reason = models.TextField(blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+        constraints = [
+            models.UniqueConstraint(
+                fields=["payment", "attempt_number"],
+                name="unique_payment_attempt_number",
+            ),
+            models.UniqueConstraint(
+                fields=["gateway_payment_id"],
+                condition=~Q(gateway_payment_id=""),
+                name="unique_attempt_gateway_payment",
+            ),
+        ]
+
+        indexes = [
+            models.Index(
+                fields=["payment", "-created_at"],
+                name="attempt_payment_created_idx",
+            ),
+            models.Index(
+                fields=["status"],
+                name="attempt_status_idx",
+            ),
+        ]
+
+    def __str__(self):
+        return (
+            f"Payment {self.payment_id} - "
+            f"Attempt #{self.attempt_number}"
+        )
+
+
+    
 class Refund(models.Model):
 
     class RefundMethod(models.TextChoices):
@@ -134,7 +222,7 @@ class Refund(models.Model):
     admin_note = models.TextField(blank=True)
 
     processed_by = models.ForeignKey(
-        "auth.User",
+        settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
@@ -175,3 +263,58 @@ class Refund(models.Model):
 
     def __str__(self):
         return f"Refund - {self.payment.order.order_number}"
+    
+class PaymentWebhookEvent(models.Model):
+
+    class ProcessingStatus(models.TextChoices):
+        RECEIVED = "RECEIVED", "Received"
+        PROCESSED = "PROCESSED", "Processed"
+        FAILED = "FAILED", "Failed"
+
+    event_id = models.CharField(
+        max_length=255,
+        unique=True,
+    )
+
+    event_type = models.CharField(
+        max_length=100,
+    )
+
+    payload = models.JSONField(
+        default=dict,
+    )
+
+    status = models.CharField(
+        max_length=20,
+        choices=ProcessingStatus.choices,
+        default=ProcessingStatus.RECEIVED,
+    )
+
+    error_message = models.TextField(
+        blank=True,
+    )
+
+    processed_at = models.DateTimeField(
+        null=True,
+        blank=True,
+    )
+
+    created_at = models.DateTimeField(
+        auto_now_add=True,
+    )
+
+    updated_at = models.DateTimeField(
+        auto_now=True,
+    )
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(
+                fields=["status"],
+                name="webhook_event_status_idx",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.event_type} - {self.event_id}"

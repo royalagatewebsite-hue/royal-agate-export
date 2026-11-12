@@ -1,8 +1,11 @@
 from decimal import Decimal
+from django.db import transaction
+
+import cloudinary.uploader
 
 from rest_framework import serializers
 
-from .models import Category, Product, ProductImage
+from .models import Category, Product, ProductImage, ProductVideo
 
 
 # ==========================================
@@ -67,11 +70,20 @@ class ProductImageSerializer(serializers.ModelSerializer):
         
 class AdminProductImageSerializer(serializers.ModelSerializer):
 
+    image_file = serializers.ImageField(
+        write_only=True,
+        required=False
+    )
+
+    image_url = serializers.URLField(read_only=True)
+
     class Meta:
         model = ProductImage
+
         fields = [
             "id",
             "product",
+            "image_file",
             "image_url",
             "alt_text",
             "sort_order",
@@ -81,38 +93,78 @@ class AdminProductImageSerializer(serializers.ModelSerializer):
 
         read_only_fields = [
             "id",
+            "image_url",
             "created_at",
         ]
-        
-    def validate(self, attrs):
-        product = attrs.get(
-            "product",
-            self.instance.product if self.instance else None
-        )
 
-        is_primary = attrs.get(
-            "is_primary",
-            self.instance.is_primary if self.instance else False
-        )
 
-        if product and is_primary:
-            existing = ProductImage.objects.filter(
-                product=product,
-                is_primary=True
+    def create(self, validated_data):
+        image_file = validated_data.pop("image_file")
+        product = validated_data["product"]
+        is_primary = validated_data.get("is_primary", False)
+
+        try:
+            result = cloudinary.uploader.upload(
+                image_file,
+                folder="royal-agate/products",
+                resource_type="image",
+                quality="auto",
+                fetch_format="auto",
             )
 
-            if self.instance:
-                existing = existing.exclude(pk=self.instance.pk)
+            validated_data["image_url"] = result["secure_url"]
+            validated_data["cloudinary_public_id"] = result["public_id"]
 
-            if existing.exists():
+        except Exception as exc:
+            raise serializers.ValidationError({
+                "image_file": f"Cloudinary upload failed: {exc}"
+            })
+
+        with transaction.atomic():
+            if is_primary:
+                ProductImage.objects.filter(
+                    product=product,
+                    is_primary=True
+                ).update(is_primary=False)
+
+            return super().create(validated_data)
+
+
+    def update(self, instance, validated_data):
+        image_file = validated_data.pop("image_file", None)
+
+        if image_file:
+            try:
+                result = cloudinary.uploader.upload(
+                    image_file,
+                    folder="royal-agate/products",
+                    resource_type="image",
+                    quality="auto",
+                    fetch_format="auto",
+                )
+
+                validated_data["image_url"] = result["secure_url"]
+                validated_data["cloudinary_public_id"] = result["public_id"]
+
+            except Exception as exc:
                 raise serializers.ValidationError({
-                    "is_primary": (
-                        "This product already has a primary image."
-                    )
+                    "image_file": f"Cloudinary upload failed: {exc}"
                 })
 
-        return attrs
+        product = validated_data.get("product", instance.product)
+        is_primary = validated_data.get(
+            "is_primary",
+            instance.is_primary
+        )
 
+        with transaction.atomic():
+            if is_primary:
+                ProductImage.objects.filter(
+                    product=product,
+                    is_primary=True
+                ).exclude(pk=instance.pk).update(is_primary=False)
+
+            return super().update(instance, validated_data)
 
 # ==========================================
 # PRODUCT SERIALIZER
@@ -159,6 +211,24 @@ class ProductSerializer(serializers.ModelSerializer):
         required=False,
         allow_null=True
     )
+    
+    primary_image_url = serializers.SerializerMethodField()
+
+    def get_primary_image_url(self, obj):
+        images = list(obj.images.all())
+
+        if not images:
+            return None
+
+        primary_image = next(
+            (image for image in images if image.is_primary),
+            None
+        )
+
+        image = primary_image or images[0]
+
+        return image.image_url
+    
 
     class Meta:
         model = Product
@@ -168,11 +238,20 @@ class ProductSerializer(serializers.ModelSerializer):
             "name",
             "slug",
             "sku",
+            "primary_image_url",
             "category",
             "category_name",
             "short_description",
             "description",
             "retail_price",
+            "weight",
+            "weight_unit",
+            "length",
+            "length_unit",
+            "width",
+            "width_unit",
+            "height",
+            "height_unit",
             "wholesale_price",
             "selling_modes",
             "retail_moq",
@@ -294,6 +373,104 @@ class ProductSerializer(serializers.ModelSerializer):
                 })
 
         return attrs
+    
+    
+class AdminProductVideoSerializer(serializers.ModelSerializer):
+
+    video_file = serializers.FileField(
+        write_only=True,
+        required=False
+    )
+
+    video_url = serializers.URLField(read_only=True)
+
+    class Meta:
+        model = ProductVideo
+
+        fields = [
+            "id",
+            "product",
+            "video_file",
+            "video_url",
+            "title",
+            "sort_order",
+            "created_at",
+        ]
+
+        read_only_fields = [
+            "id",
+            "video_url",
+            "created_at",
+        ]
+
+    def validate_video_file(self, value):
+        allowed_types = [
+            "video/mp4",
+            "video/webm",
+            "video/quicktime",
+        ]
+
+        if value.content_type not in allowed_types:
+            raise serializers.ValidationError(
+                "Only MP4, WebM and MOV videos are allowed."
+            )
+
+        max_size = 100 * 1024 * 1024
+
+        if value.size > max_size:
+            raise serializers.ValidationError(
+                "Video size cannot exceed 100 MB."
+            )
+
+        return value
+
+    def create(self, validated_data):
+        video_file = validated_data.pop("video_file", None)
+
+        if not video_file:
+            raise serializers.ValidationError({
+                "video_file": "Video file is required."
+            })
+
+        try:
+            result = cloudinary.uploader.upload(
+                video_file,
+                folder="royal-agate/products/videos",
+                resource_type="video",
+            )
+
+            validated_data["video_url"] = result["secure_url"]
+            validated_data["cloudinary_public_id"] = result["public_id"]
+
+        except Exception as exc:
+            raise serializers.ValidationError({
+                "video_file": f"Cloudinary upload failed: {exc}"
+            })
+
+        return super().create(validated_data)
+
+    def update(self, instance, validated_data):
+        video_file = validated_data.pop("video_file", None)
+
+        if video_file:
+            try:
+                result = cloudinary.uploader.upload(
+                    video_file,
+                    folder="royal-agate/products/videos",
+                    resource_type="video",
+                )
+
+                validated_data["video_url"] = result["secure_url"]
+                validated_data["cloudinary_public_id"] = result["public_id"]
+
+            except Exception as exc:
+                raise serializers.ValidationError({
+                    "video_file": f"Cloudinary upload failed: {exc}"
+                })
+
+        return super().update(instance, validated_data)
+
+
 
 
 # ==========================================
@@ -304,6 +481,11 @@ class ProductDetailSerializer(ProductSerializer):
 
 
     images = ProductImageSerializer(
+        many=True,
+        read_only=True
+    )
+    
+    videos = AdminProductVideoSerializer(
         many=True,
         read_only=True
     )
@@ -355,10 +537,13 @@ class ProductDetailSerializer(ProductSerializer):
     class Meta(ProductSerializer.Meta):
         fields = ProductSerializer.Meta.fields + [
             "images",
+            "videos",
             "stock_quantity",
             "is_in_stock",
             "is_low_stock",
             "retail_available",
             "wholesale_available",
         ]
+        
+
 

@@ -8,6 +8,11 @@ from apps.orders.models import OrderItem
 class ReviewSerializer(serializers.ModelSerializer):
 
     customer_name = serializers.SerializerMethodField()
+    
+    product_name = serializers.CharField(
+        source="product.name",
+        read_only=True
+    )
 
     class Meta:
         model = Review
@@ -15,6 +20,7 @@ class ReviewSerializer(serializers.ModelSerializer):
         fields = [
             "id",
             "product",
+            "product_name",
             "customer_name",
             "rating",
             "title",
@@ -118,7 +124,7 @@ class ReviewSerializer(serializers.ModelSerializer):
         return Review.objects.create(
             user=user,
             is_verified_purchase=is_verified_purchase,
-            status=Review.ReviewStatus.PENDING,
+            status=Review.ReviewStatus.APPROVED,
             **validated_data
         )
 
@@ -134,7 +140,7 @@ class ReviewSerializer(serializers.ModelSerializer):
         ).exists()
 
         # Edited reviews require moderation again
-        instance.status = Review.ReviewStatus.PENDING
+        instance.status = Review.ReviewStatus.APPROVED
         instance.moderated_by = None
         instance.moderated_at = None
         instance.moderation_note = ""

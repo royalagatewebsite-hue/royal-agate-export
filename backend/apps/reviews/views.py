@@ -1,8 +1,8 @@
 from django.db.models import Avg, Count
 from django.shortcuts import get_object_or_404
-from django.utils import timezone
 
-from rest_framework import generics, status
+
+from rest_framework import generics, filters
 from rest_framework.exceptions import ValidationError
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
@@ -159,84 +159,87 @@ class AdminReviewListView(generics.ListAPIView):
         IsAdmin
     ]
 
+    filter_backends = [filters.SearchFilter]
+
+    search_fields = [
+        "user__first_name",
+        "user__last_name",
+        "user__email",
+        "product__name",
+        "title",
+        "comment",
+    ]
+
     def get_queryset(self):
+
         queryset = Review.objects.all().select_related(
             "user",
             "product",
             "moderated_by"
         )
 
+        # Status filter
         review_status = self.request.query_params.get("status")
 
         if review_status:
             valid_statuses = [
-                choice[0] for choice in Review.ReviewStatus.choices
+                choice[0]
+                for choice in Review.ReviewStatus.choices
             ]
 
             if review_status not in valid_statuses:
-                
                 raise ValidationError({
                     "status": "Invalid review status."
                 })
 
             queryset = queryset.filter(status=review_status)
 
+        # Rating filter
+        rating = self.request.query_params.get("rating")
+
+        if rating:
+            if not rating.isdigit() or int(rating) not in range(1, 6):
+                raise ValidationError({
+                    "rating": "Rating must be between 1 and 5."
+                })
+
+            queryset = queryset.filter(rating=int(rating))
+
         return queryset
-
-
-class AdminReviewModerationView(APIView):
+    
+class AdminReviewStatsView(APIView):
 
     permission_classes = [
         IsAuthenticated,
         IsAdmin
     ]
 
-    def patch(self, request, pk):
+    def get(self, request):
 
-        review = get_object_or_404(
-            Review,
-            pk=pk
-        )
-
-        action = request.data.get("action")
-        moderation_note = request.data.get(
-            "moderation_note",
-            ""
-        )
-        
-        if not isinstance(moderation_note, str):
-            return Response(
-                {"message": "Moderation note must be a string."},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        if action not in ["APPROVED", "REJECTED"]:
-            return Response(
-                {
-                    "message": (
-                        "Action must be APPROVED or REJECTED."
-                    )
-                },
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        review.status = action
-        review.moderated_by = request.user
-        review.moderated_at = timezone.now()
-        review.moderation_note = moderation_note
-
-        review.save(
-            update_fields=[
-                "status",
-                "moderated_by",
-                "moderated_at",
-                "moderation_note",
-                "updated_at"
-            ]
+        stats = Review.objects.aggregate(
+            total_reviews=Count("id"),
+            average_rating=Avg("rating")
         )
 
         return Response({
-            "message": f"Review {action.lower()} successfully.",
-            "review_id": review.id,
-            "status": review.status
+            "total_reviews": stats["total_reviews"],
+            "average_rating": round(
+                stats["average_rating"] or 0,
+                2
+            )
         })
+
+
+# ==========================================
+# ADMIN: PERMANENTLY DELETE REVIEW
+# ==========================================
+
+class AdminReviewDeleteView(generics.DestroyAPIView):
+
+    queryset = Review.objects.all()
+    serializer_class = ReviewSerializer
+
+    permission_classes = [
+        IsAuthenticated,
+        IsAdmin
+    ]

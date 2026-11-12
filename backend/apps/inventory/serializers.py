@@ -114,3 +114,33 @@ class StockAdjustmentSerializer(serializers.Serializer):
 class StockAdjustmentResponseSerializer(serializers.Serializer):
     message = serializers.CharField()
     inventory = InventorySerializer()
+    
+class InventoryCreateSerializer(serializers.Serializer):
+
+    product_id = serializers.IntegerField(min_value=1)
+
+    quantity = serializers.IntegerField(min_value=0)
+
+    low_stock_threshold = serializers.IntegerField(min_value=0)
+
+    def validate_product_id(self, value):
+        from apps.catalogue.models import Product
+
+        if not Product.objects.filter(pk=value).exists():
+            raise serializers.ValidationError(
+                "Selected product does not exist."
+            )
+
+        if Inventory.objects.filter(product_id=value).exists():
+            raise serializers.ValidationError(
+                "Inventory already exists for this product."
+            )
+
+        return value
+
+
+class InventoryThresholdUpdateSerializer(serializers.ModelSerializer):
+
+    class Meta:
+        model = Inventory
+        fields = ["low_stock_threshold"]

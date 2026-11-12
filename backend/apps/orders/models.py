@@ -12,6 +12,7 @@ class Order(models.Model):
         CONFIRMED = "CONFIRMED", "Confirmed"
         PROCESSING = "PROCESSING", "Processing"
         SHIPPED = "SHIPPED", "Shipped"
+        DELIVERED = "DELIVERED", "Delivered"
         CANCELLED = "CANCELLED", "Cancelled"
 
     class PaymentStatus(models.TextChoices):
@@ -34,6 +35,11 @@ class Order(models.Model):
     shipping_full_name = models.CharField(max_length=150)
     shipping_phone_number = models.CharField(max_length=20)
     shipping_address_line_1 = models.CharField(max_length=255)
+    shipping_district = models.CharField(
+        max_length=100,
+        blank=True,
+        default=""
+    )
     shipping_address_line_2 = models.CharField(
         max_length=255,
         blank=True
@@ -97,6 +103,11 @@ class Order(models.Model):
         null=True,
         blank=True
     )
+    
+    delivered_at = models.DateTimeField(
+        null=True,
+        blank=True
+    )
 
     notes = models.TextField(blank=True)
 
@@ -141,6 +152,7 @@ class Order(models.Model):
                         "CONFIRMED",
                         "PROCESSING",
                         "SHIPPED",
+                        "DELIVERED",
                         "CANCELLED",
                     ]
                 ),
@@ -356,6 +368,7 @@ class OrderStatusHistory(models.Model):
                         "CONFIRMED",
                         "PROCESSING",
                         "SHIPPED",
+                        "DELIVERED",
                         "CANCELLED",
                     ]
                 ),

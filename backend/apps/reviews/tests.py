@@ -1,6 +1,7 @@
 from decimal import Decimal
 
 from django.contrib.auth import get_user_model
+from django.contrib.auth.models import Group
 from django.urls import reverse
 from rest_framework.test import APITestCase
 
@@ -33,6 +34,14 @@ class ReviewTestSetup(APITestCase):
             password="TestPassword123",
             is_staff=True
         )
+
+        # Assign the same role groups used by the application permissions.
+        customer_group, _ = Group.objects.get_or_create(name="Customer")
+        admin_group, _ = Group.objects.get_or_create(name="Admin")
+
+        self.customer.groups.add(customer_group)
+        self.other_customer.groups.add(customer_group)
+        self.admin.groups.add(admin_group)
 
         self.category = Category.objects.create(
             name="Agate Stones"
@@ -84,7 +93,7 @@ class ReviewTestSetup(APITestCase):
             comment=kwargs.get("comment", "Good quality product."),
             status=kwargs.get(
                 "status",
-                Review.ReviewStatus.PENDING
+                Review.ReviewStatus.APPROVED
             ),
             is_verified_purchase=kwargs.get(
                 "is_verified_purchase",
@@ -145,7 +154,7 @@ class ReviewCreateTests(ReviewTestSetup):
             product=self.product
         )
 
-        self.assertEqual(review.status, Review.ReviewStatus.PENDING)
+        self.assertEqual(review.status, Review.ReviewStatus.APPROVED)
         self.assertEqual(review.rating, 5)
 
     def test_anonymous_user_cannot_create_review(self):
@@ -361,7 +370,7 @@ class CustomerReviewUpdateTests(ReviewTestSetup):
         self.assertEqual(self.review.rating, 4)
         self.assertEqual(
             self.review.status,
-            Review.ReviewStatus.PENDING
+            Review.ReviewStatus.APPROVED
         )
 
     def test_customer_cannot_change_review_product(self):
@@ -386,7 +395,7 @@ class CustomerReviewUpdateTests(ReviewTestSetup):
 
         self.assertEqual(response.status_code, 200)
 
-    def test_editing_review_resets_moderation(self):
+    def test_editing_review_remains_approved_and_clears_moderation(self):
         self.review.moderated_by = self.admin
         self.review.moderated_at = self.review.created_at
         self.review.moderation_note = "Previously approved"
@@ -406,7 +415,7 @@ class CustomerReviewUpdateTests(ReviewTestSetup):
 
         self.assertEqual(
             self.review.status,
-            Review.ReviewStatus.PENDING
+            Review.ReviewStatus.APPROVED
         )
         self.assertIsNone(self.review.moderated_by)
         self.assertIsNone(self.review.moderated_at)
@@ -559,18 +568,20 @@ class ProductRatingSummaryTests(ReviewTestSetup):
 
 
 # ==========================================
-# ADMIN: REVIEW MODERATION
+# ADMIN: REVIEW MANAGEMENT
 # ==========================================
 
-class AdminReviewModerationTests(ReviewTestSetup):
+class AdminReviewManagementTests(ReviewTestSetup):
 
     def setUp(self):
         super().setUp()
 
-        self.review = self.create_review()
+        self.review = self.create_review(
+            status=Review.ReviewStatus.APPROVED
+        )
 
-        self.moderation_url = reverse(
-            "admin-review-moderate",
+        self.delete_url = reverse(
+            "admin-review-delete",
             kwargs={"pk": self.review.id}
         )
 
@@ -595,92 +606,40 @@ class AdminReviewModerationTests(ReviewTestSetup):
 
         self.assertEqual(response.status_code, 403)
 
-    def test_admin_can_approve_review(self):
+    def test_admin_can_permanently_delete_review(self):
         self.client.force_authenticate(user=self.admin)
 
-        response = self.client.patch(
-            self.moderation_url,
-            {
-                "action": "APPROVED",
-                "moderation_note": "Review approved."
-            },
-            format="json"
+        response = self.client.delete(self.delete_url)
+
+        self.assertEqual(response.status_code, 204)
+        self.assertFalse(
+            Review.objects.filter(pk=self.review.pk).exists()
         )
 
-        self.assertEqual(response.status_code, 200)
-
-        self.review.refresh_from_db()
-
-        self.assertEqual(
-            self.review.status,
-            Review.ReviewStatus.APPROVED
-        )
-        self.assertEqual(self.review.moderated_by, self.admin)
-        self.assertIsNotNone(self.review.moderated_at)
-
-    def test_admin_can_reject_review(self):
-        self.client.force_authenticate(user=self.admin)
-
-        response = self.client.patch(
-            self.moderation_url,
-            {
-                "action": "REJECTED",
-                "moderation_note": "Inappropriate content."
-            },
-            format="json"
-        )
-
-        self.assertEqual(response.status_code, 200)
-
-        self.review.refresh_from_db()
-
-        self.assertEqual(
-            self.review.status,
-            Review.ReviewStatus.REJECTED
-        )
-
-    def test_invalid_moderation_action_is_rejected(self):
-        self.client.force_authenticate(user=self.admin)
-
-        response = self.client.patch(
-            self.moderation_url,
-            {"action": "PENDING"},
-            format="json"
-        )
-
-        self.assertEqual(response.status_code, 400)
-
-    def test_invalid_moderation_note_is_rejected(self):
-        self.client.force_authenticate(user=self.admin)
-
-        response = self.client.patch(
-            self.moderation_url,
-            {
-                "action": "APPROVED",
-                "moderation_note": 123
-            },
-            format="json"
-        )
-
-        self.assertEqual(response.status_code, 400)
-
-    def test_customer_cannot_moderate_review(self):
+    def test_customer_cannot_delete_review_through_admin_endpoint(self):
         self.client.force_authenticate(user=self.customer)
 
-        response = self.client.patch(
-            self.moderation_url,
-            {"action": "APPROVED"},
-            format="json"
-        )
+        response = self.client.delete(self.delete_url)
 
         self.assertEqual(response.status_code, 403)
+        self.assertTrue(
+            Review.objects.filter(pk=self.review.pk).exists()
+        )
+
+    def test_anonymous_user_cannot_delete_review_through_admin_endpoint(self):
+        response = self.client.delete(self.delete_url)
+
+        self.assertEqual(response.status_code, 401)
+        self.assertTrue(
+            Review.objects.filter(pk=self.review.pk).exists()
+        )
 
     def test_admin_can_filter_reviews_by_status(self):
         self.client.force_authenticate(user=self.admin)
 
         response = self.client.get(
             self.admin_reviews_url,
-            {"status": "PENDING"}
+            {"status": "APPROVED"}
         )
 
         self.assertEqual(response.status_code, 200)

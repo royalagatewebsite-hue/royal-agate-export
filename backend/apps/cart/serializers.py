@@ -127,7 +127,7 @@ class CustomerAddressSerializer(serializers.ModelSerializer):
             "full_name",
             "phone_number",
             "address_line_1",
-            "address_line_2",
+            "district",
             "city",
             "state",
             "pincode",
@@ -149,6 +149,16 @@ class CustomerAddressSerializer(serializers.ModelSerializer):
         if not value:
             raise serializers.ValidationError(
                 "Phone number is required."
+            )
+
+        return value
+    
+    def validate_district(self, value):
+        value = value.strip()
+
+        if not value:
+            raise serializers.ValidationError(
+                "District is required."
             )
 
         return value
