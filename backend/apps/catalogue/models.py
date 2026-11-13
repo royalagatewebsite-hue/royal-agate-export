@@ -157,8 +157,31 @@ class Product(models.Model):
     
 
     def save(self, *args, **kwargs):
-        if not self.slug:
-            self.slug = slugify(self.name)
+        base_slug = slugify(self.slug or self.name)
+
+        if not base_slug:
+            base_slug = slugify(self.sku) or "product"
+
+        candidate = base_slug
+
+        existing = Product.objects.filter(slug=candidate)
+
+        if self.pk:
+            existing = existing.exclude(pk=self.pk)
+
+        if existing.exists():
+            sku_suffix = slugify(self.sku or "")
+            candidate = f"{base_slug}-{sku_suffix}" if sku_suffix else base_slug
+
+            counter = 2
+
+            while Product.objects.filter(slug=candidate).exclude(
+                pk=self.pk
+            ).exists():
+                candidate = f"{base_slug}-{sku_suffix}-{counter}"
+                counter += 1
+
+        self.slug = candidate
 
         super().save(*args, **kwargs)
 
