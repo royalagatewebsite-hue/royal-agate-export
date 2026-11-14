@@ -2541,4 +2541,312 @@ class OrderServiceTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 404)
+        
+    # -----------------------------------------
+    # Admin Direct Order Cancellation Tests
+    # -----------------------------------------
+
+    def test_admin_can_cancel_pending_order_and_restore_stock(self):
+        order = self.create_order()
+        admin = self.create_admin()
+
+        cancelled_order, cancellation = OrderService.admin_cancel_order(
+            order_id=order.id,
+            admin_user=admin,
+            reason="Admin cancellation."
+        )
+
+        cancelled_order.refresh_from_db()
+        self.inventory.refresh_from_db()
+
+        self.assertEqual(
+            cancelled_order.status,
+            Order.OrderStatus.CANCELLED
+        )
+
+        self.assertEqual(self.inventory.quantity, 100)
+
+        self.assertIsNotNone(cancelled_order.stock_restored_at)
+
+        self.assertEqual(
+            cancellation.status,
+            OrderCancellation.CancellationStatus.DIRECT_CANCELLED
+        )
+
+        self.assertEqual(
+            StockMovement.objects.filter(
+                inventory=self.inventory,
+                movement_type="INCREASE"
+            ).count(),
+            1
+        )
+
+    def test_admin_can_cancel_processing_order_and_restore_stock(self):
+        order = self.create_order()
+        admin = self.create_admin()
+
+        self.mark_order_as_paid(order)
+        OrderService.confirm_order(order.id, admin)
+
+        OrderService.update_order_status(
+            order.id,
+            Order.OrderStatus.PROCESSING,
+            admin
+        )
+
+        cancelled_order, cancellation = OrderService.admin_cancel_order(
+            order_id=order.id,
+            admin_user=admin,
+            reason="Admin cancelled processing order."
+        )
+
+        cancelled_order.refresh_from_db()
+        self.inventory.refresh_from_db()
+
+        self.assertEqual(
+            cancelled_order.status,
+            Order.OrderStatus.CANCELLED
+        )
+
+        self.assertEqual(self.inventory.quantity, 100)
+
+        self.assertIsNotNone(cancelled_order.stock_restored_at)
+
+        self.assertEqual(
+            cancellation.status,
+            OrderCancellation.CancellationStatus.DIRECT_CANCELLED
+        )
+
+    def test_admin_can_cancel_shipped_order_without_restoring_stock(self):
+        order = self.create_order()
+        admin = self.create_admin()
+
+        self.mark_order_as_paid(order)
+        OrderService.confirm_order(order.id, admin)
+
+        OrderService.update_order_status(
+            order.id,
+            Order.OrderStatus.PROCESSING,
+            admin
+        )
+
+        OrderService.update_order_status(
+            order.id,
+            Order.OrderStatus.SHIPPED,
+            admin
+        )
+
+        cancelled_order, cancellation = OrderService.admin_cancel_order(
+            order_id=order.id,
+            admin_user=admin,
+            reason="Customer cancelled shipped order."
+        )
+
+        cancelled_order.refresh_from_db()
+        self.inventory.refresh_from_db()
+
+        self.assertEqual(
+            cancelled_order.status,
+            Order.OrderStatus.CANCELLED
+        )
+
+        # Stock must not be restored before physical return.
+        self.assertEqual(self.inventory.quantity, 98)
+
+        self.assertIsNone(cancelled_order.stock_restored_at)
+
+        self.assertEqual(
+            cancellation.status,
+            OrderCancellation.CancellationStatus.DIRECT_CANCELLED
+        )
+
+    def test_admin_can_restore_stock_after_receiving_shipped_order(self):
+        order = self.create_order()
+        admin = self.create_admin()
+
+        self.mark_order_as_paid(order)
+        OrderService.confirm_order(order.id, admin)
+
+        OrderService.update_order_status(
+            order.id,
+            Order.OrderStatus.PROCESSING,
+            admin
+        )
+
+        OrderService.update_order_status(
+            order.id,
+            Order.OrderStatus.SHIPPED,
+            admin
+        )
+
+        OrderService.admin_cancel_order(
+            order_id=order.id,
+            admin_user=admin,
+            reason="Shipped order cancellation."
+        )
+
+        OrderService.mark_returned_and_restore_stock(
+            order_id=order.id,
+            admin_user=admin
+        )
+
+        order.refresh_from_db()
+        self.inventory.refresh_from_db()
+
+        self.assertEqual(
+            order.status,
+            Order.OrderStatus.CANCELLED
+        )
+
+        self.assertEqual(self.inventory.quantity, 100)
+
+        self.assertIsNotNone(order.stock_restored_at)
+
+        self.assertEqual(
+            StockMovement.objects.filter(
+                inventory=self.inventory,
+                movement_type="INCREASE"
+            ).count(),
+            1
+        )
+
+    def test_returned_order_stock_cannot_be_restored_twice(self):
+        order = self.create_order()
+        admin = self.create_admin()
+
+        self.mark_order_as_paid(order)
+        OrderService.confirm_order(order.id, admin)
+
+        OrderService.update_order_status(
+            order.id,
+            Order.OrderStatus.PROCESSING,
+            admin
+        )
+
+        OrderService.update_order_status(
+            order.id,
+            Order.OrderStatus.SHIPPED,
+            admin
+        )
+
+        OrderService.admin_cancel_order(
+            order_id=order.id,
+            admin_user=admin,
+            reason="Shipped order cancellation."
+        )
+
+        OrderService.mark_returned_and_restore_stock(
+            order_id=order.id,
+            admin_user=admin
+        )
+
+        with self.assertRaises(ValidationError):
+            OrderService.mark_returned_and_restore_stock(
+                order_id=order.id,
+                admin_user=admin
+            )
+
+        self.inventory.refresh_from_db()
+
+        self.assertEqual(self.inventory.quantity, 100)
+
+        self.assertEqual(
+            StockMovement.objects.filter(
+                inventory=self.inventory,
+                movement_type="INCREASE"
+            ).count(),
+            1
+        )
+
+    # -----------------------------------------
+    # Admin Cancellation API Tests
+    # -----------------------------------------
+
+    def test_admin_can_cancel_shipped_order_and_mark_returned_through_api(self):
+        order = self.create_order()
+        admin = self.create_admin()
+
+        self.mark_order_as_paid(order)
+        OrderService.confirm_order(order.id, admin)
+
+        OrderService.update_order_status(
+            order.id,
+            Order.OrderStatus.PROCESSING,
+            admin
+        )
+
+        OrderService.update_order_status(
+            order.id,
+            Order.OrderStatus.SHIPPED,
+            admin
+        )
+
+        self.client.force_authenticate(user=admin)
+
+        # Cancel shipped order.
+        cancel_response = self.client.post(
+            f"/api/v1/orders/admin/{order.id}/cancel/",
+            {
+                "reason": "Admin cancelled shipped order."
+            },
+            format="json"
+        )
+
+        self.assertEqual(cancel_response.status_code, 200)
+
+        order.refresh_from_db()
+        self.inventory.refresh_from_db()
+
+        self.assertEqual(
+            order.status,
+            Order.OrderStatus.CANCELLED
+        )
+
+        self.assertEqual(self.inventory.quantity, 98)
+        self.assertIsNone(order.stock_restored_at)
+
+        # Admin confirms physical product receipt.
+        return_response = self.client.post(
+            f"/api/v1/orders/admin/{order.id}/mark-returned/",
+            {},
+            format="json"
+        )
+
+        self.assertEqual(return_response.status_code, 200)
+
+        order.refresh_from_db()
+        self.inventory.refresh_from_db()
+
+        self.assertEqual(
+            order.status,
+            Order.OrderStatus.CANCELLED
+        )
+
+        self.assertEqual(self.inventory.quantity, 100)
+        self.assertIsNotNone(order.stock_restored_at)
+
+    def test_customer_cannot_access_admin_order_cancellation_api(self):
+        order = self.create_order()
+
+        self.client.force_authenticate(user=self.user)
+
+        response = self.client.post(
+            f"/api/v1/orders/admin/{order.id}/cancel/",
+            {
+                "reason": "Unauthorized cancellation attempt."
+            },
+            format="json"
+        )
+
+        self.assertEqual(response.status_code, 403)
+
+        order.refresh_from_db()
+        self.inventory.refresh_from_db()
+
+        self.assertEqual(
+            order.status,
+            Order.OrderStatus.PENDING
+        )
+
+        self.assertEqual(self.inventory.quantity, 98)
 

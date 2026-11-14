@@ -14,6 +14,7 @@ from .serializers import (
     PaymentDetailSerializer,
     PaymentAttemptFailSerializer,
     PaymentFailureFinalizeSerializer,
+    AdminPaymentLookupSerializer,
     RefundCreateSerializer,
     RefundSerializer,
     RefundCompleteSerializer,
@@ -237,6 +238,37 @@ class PaymentFailureFinalizeView(APIView):
                 "message": "Payment failure finalized successfully.",
                 "payment": PaymentDetailSerializer(payment).data,
             },
+            status=status.HTTP_200_OK,
+        )
+        
+class AdminPaymentLookupView(APIView):
+
+    permission_classes = [IsAuthenticated, IsAdmin]
+
+    def get(self, request, payment_id):
+
+        payment = (
+            Payment.objects
+            .select_related("order")
+            .prefetch_related(
+                "attempts",
+                "refunds",
+                "order__items",
+            )
+            .filter(id=payment_id)
+            .first()
+        )
+
+        if payment is None:
+            return Response(
+                {"detail": "Payment not found."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        serializer = AdminPaymentLookupSerializer(payment)
+
+        return Response(
+            serializer.data,
             status=status.HTTP_200_OK,
         )
 

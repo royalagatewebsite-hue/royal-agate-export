@@ -55,3 +55,80 @@ export const verifyRazorpayPayment = async ({
     },
   });
 };
+
+// ==========================================
+// ADMIN REFUND APIs
+// ==========================================
+
+const REFUNDS_ENDPOINT = "/payments/refunds/";
+
+// Get all refunds
+export const getAdminRefunds = async () => {
+  return apiRequest(REFUNDS_ENDPOINT);
+};
+
+// Create a refund
+export const createAdminRefund = async ({
+  paymentId,
+  amount,
+  refundMethod,
+  adminNote = "",
+}) => {
+  return apiRequest(REFUNDS_ENDPOINT, {
+    method: "POST",
+    body: {
+      payment_id: paymentId,
+      amount,
+      refund_method: refundMethod,
+      admin_note: adminNote,
+    },
+  });
+};
+
+// Move refund to processing
+export const processAdminRefund = async (refundId) => {
+  return apiRequest(`${REFUNDS_ENDPOINT}${refundId}/process/`, {
+    method: "POST",
+  });
+};
+
+// Complete refund
+export const completeAdminRefund = async (
+  refundId,
+  transactionReference,
+  adminNote = ""
+) => {
+  return apiRequest(`${REFUNDS_ENDPOINT}${refundId}/complete/`, {
+    method: "POST",
+    body: {
+      transaction_reference: transactionReference,
+      admin_note: adminNote,
+    },
+  });
+};
+
+// Mark refund as failed
+export const failAdminRefund = async (
+  refundId,
+  adminNote = ""
+) => {
+  return apiRequest(`${REFUNDS_ENDPOINT}${refundId}/fail/`, {
+    method: "POST",
+    body: {
+      admin_note: adminNote,
+    },
+  });
+};
+
+// ==========================================
+// ADMIN PAYMENT LOOKUP API
+// ==========================================
+
+const ADMIN_PAYMENT_LOOKUP_ENDPOINT =
+  "/payments/admin/lookup/";
+
+export const getAdminPaymentById = async (paymentId) => {
+  return apiRequest(
+    `${ADMIN_PAYMENT_LOOKUP_ENDPOINT}${paymentId}/`
+  );
+};

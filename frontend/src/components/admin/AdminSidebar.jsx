@@ -12,6 +12,7 @@ import {
   Tags,
   Mail,
   Star,
+  Wallet,
 } from "lucide-react";
 import { useAuth } from "../../context/AuthContext";
 
@@ -45,6 +46,11 @@ const menuItems = [
     name: "Orders",
     path: "/admin/orders",
     icon: ShoppingBag,
+  },
+  {
+    name: "Refunds",
+    path: "/admin/refunds",
+    icon: Wallet,
   },
   {
     name: "Cancellations",

@@ -96,6 +96,10 @@ const AdminReviewsPage = lazy(
   () => import("./pages/admin/AdminReviewsPage")
 );
 
+const AdminRefundsPage = lazy(
+  () => import("./pages/admin/AdminRefundsPage")
+);
+
 // Static Pages
 const ContactPage = lazy(() => import("./pages/contact/ContactPage"));
 const AboutUsPage = lazy(() => import("./pages/about/AboutUsPage"));
@@ -191,6 +195,11 @@ export default function App() {
               <Route
                 path="cancellations"
                 element={<AdminCancellationsPage />}
+              />
+
+              <Route
+                path="refunds"
+                element={<AdminRefundsPage />}
               />
 
               <Route

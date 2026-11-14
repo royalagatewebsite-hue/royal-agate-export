@@ -10,7 +10,10 @@ import {
   ShoppingBag,
 } from "lucide-react";
 
-import { getAdminOrders } from "../../services/orderService";
+import {
+  getAdminOrders,
+  cancelAdminOrder,
+} from "../../services/orderService";
 
 const ORDER_STATUSES = [
   { label: "All Orders", value: "" },
@@ -92,6 +95,7 @@ export default function AdminOrdersPage() {
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [cancellingOrderId, setCancellingOrderId] = useState(null);
 
   const PAGE_SIZE = 20;
 
@@ -142,6 +146,43 @@ export default function AdminOrdersPage() {
   const handlePaymentChange = (value) => {
     setPaymentFilter(value);
     setPage(1);
+  };
+
+  const handleCancelOrder = async (order) => {
+    const reason = window.prompt(
+      `Enter cancellation reason for order ${order.order_number}:`
+    );
+
+    if (reason === null) return;
+
+    if (!reason.trim()) {
+      window.alert("Cancellation reason is required.");
+      return;
+    }
+
+    if (!window.confirm(
+      `Are you sure you want to cancel order ${order.order_number}?`
+    )) {
+      return;
+    }
+
+    try {
+      setCancellingOrderId(order.id);
+      setError("");
+
+      const response = await cancelAdminOrder(
+        order.id,
+        reason.trim()
+      );
+
+      window.alert(response.message || "Order cancelled successfully.");
+
+      await fetchOrders();
+    } catch (err) {
+      window.alert(err.message || "Unable to cancel order.");
+    } finally {
+      setCancellingOrderId(null);
+    }
   };
 
   const startItem =
@@ -360,15 +401,27 @@ export default function AdminOrdersPage() {
                     </td>
 
                     <td className="px-5 py-5">
-                      <button
-                        onClick={() =>
-                          navigate(`/admin/orders/${order.id}`)
-                        }
-                        className="inline-flex items-center gap-2 px-4 py-2 border border-[#A98250] text-[#18352B] text-xs hover:bg-[#A98250] hover:text-white transition-colors"
-                      >
-                        <Eye size={15} />
-                        View
-                      </button>
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={() => navigate(`/admin/orders/${order.id}`)}
+                          className="inline-flex items-center gap-2 px-4 py-2 border border-[#A98250] text-[#18352B] text-xs hover:bg-[#A98250] hover:text-white transition-colors"
+                        >
+                          <Eye size={15} />
+                          View
+                        </button>
+
+                        {["PENDING", "CONFIRMED", "PROCESSING", "SHIPPED"].includes(
+                          order.status
+                        ) && (
+                          <button
+                            onClick={() => handleCancelOrder(order)}
+                            disabled={cancellingOrderId === order.id}
+                            className="inline-flex items-center gap-2 px-4 py-2 border border-red-300 text-red-600 text-xs hover:bg-red-600 hover:text-white transition-colors disabled:opacity-50"
+                          >
+                            {cancellingOrderId === order.id ? "Cancelling..." : "Cancel"}
+                          </button>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 ))

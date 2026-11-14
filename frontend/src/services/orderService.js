@@ -132,6 +132,27 @@ export const rejectAdminCancellation = async (
   );
 };
 
+// Admin direct order cancellation
+export const cancelAdminOrder = async (orderId, reason) => {
+  return apiRequest(
+    `${ORDER_ENDPOINT}admin/${orderId}/cancel/`,
+    {
+      method: "POST",
+      body: { reason },
+    }
+  );
+};
+
+// Mark shipped cancelled order as physically returned
+export const markAdminOrderReturned = async (orderId) => {
+  return apiRequest(
+    `${ORDER_ENDPOINT}admin/${orderId}/mark-returned/`,
+    {
+      method: "POST",
+    }
+  );
+};
+
 // Get admin dashboard statistics
 export const getAdminDashboardStats = async () => {
   return apiRequest(`${ORDER_ENDPOINT}admin/dashboard-stats/`);

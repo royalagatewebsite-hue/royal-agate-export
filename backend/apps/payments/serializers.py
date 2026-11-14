@@ -1,5 +1,7 @@
 from decimal import Decimal
 
+from apps.orders.models import OrderItem
+
 from rest_framework import serializers
 
 from .models import Payment, PaymentAttempt, Refund
@@ -282,3 +284,103 @@ class RefundFailSerializer(serializers.Serializer):
         allow_blank=True,
         max_length=2000,
     )
+    
+# =====================================================
+# ADMIN PAYMENT LOOKUP SERIALIZERS
+# =====================================================
+
+
+class AdminOrderItemSerializer(serializers.ModelSerializer):
+
+    class Meta:
+        model = OrderItem
+
+        fields = (
+            "id",
+            "product_name",
+            "product_sku",
+            "purchase_mode",
+            "quantity",
+            "unit_price",
+            "subtotal",
+        )
+
+        read_only_fields = fields
+
+
+class AdminPaymentLookupSerializer(serializers.ModelSerializer):
+
+    order_number = serializers.CharField(
+        source="order.order_number",
+        read_only=True,
+    )
+
+    order_status = serializers.CharField(
+        source="order.status",
+        read_only=True,
+    )
+
+    order_payment_status = serializers.CharField(
+        source="order.payment_status",
+        read_only=True,
+    )
+
+    shipping_details = serializers.SerializerMethodField()
+
+    order_items = AdminOrderItemSerializer(
+        source="order.items",
+        many=True,
+        read_only=True,
+    )
+
+    attempts = PaymentAttemptSerializer(
+        many=True,
+        read_only=True,
+    )
+
+    refunds = RefundSerializer(
+        many=True,
+        read_only=True,
+    )
+
+    class Meta:
+        model = Payment
+
+        fields = (
+            "id",
+            "order",
+            "order_number",
+            "order_status",
+            "order_payment_status",
+            "payment_method",
+            "status",
+            "amount",
+            "transaction_id",
+            "gateway_order_id",
+            "gateway_payment_id",
+            "failure_reason",
+            "shipping_details",
+            "order_items",
+            "attempts",
+            "refunds",
+            "created_at",
+            "updated_at",
+        )
+
+        read_only_fields = fields
+
+    def get_shipping_details(self, obj):
+
+        order = obj.order
+
+        return {
+            "full_name": order.shipping_full_name,
+            "phone_number": order.shipping_phone_number,
+            "address_line_1": order.shipping_address_line_1,
+            "address_line_2": order.shipping_address_line_2,
+            "district": order.shipping_district,
+            "city": order.shipping_city,
+            "state": order.shipping_state,
+            "pincode": order.shipping_pincode,
+            "country": order.shipping_country,
+        }

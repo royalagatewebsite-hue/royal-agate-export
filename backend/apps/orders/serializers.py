@@ -154,6 +154,7 @@ class AdminOrderSerializer(OrderSerializer):
         fields = OrderSerializer.Meta.fields + [
             "customer_email",
             "customer_name",
+            "stock_restored_at",
         ]
 
     def get_customer_name(self, obj):

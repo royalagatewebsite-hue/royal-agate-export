@@ -18,6 +18,8 @@ import {
   getAdminOrderTimeline,
   confirmAdminOrder,
   updateAdminOrderStatus,
+  cancelAdminOrder,
+  markAdminOrderReturned,
 } from "../../services/orderService";
 
 const formatCurrency = (amount) =>
@@ -90,6 +92,8 @@ export default function AdminOrderDetailsPage() {
   const [actionMessage, setActionMessage] = useState("");
   const [actionError, setActionError] = useState("");
 
+  const [returning, setReturning] = useState(false);
+
   const fetchOrderDetails = useCallback(async () => {
     try {
       setLoading(true);
@@ -147,6 +151,71 @@ export default function AdminOrderDetailsPage() {
         );
     } finally {
         setUpdating(false);
+    }
+  };
+
+  const handleCancelOrder = async () => {
+    const reason = window.prompt(
+      `Enter cancellation reason for order ${order.order_number}:`
+    );
+
+    if (reason === null) return;
+
+    if (!reason.trim()) {
+      window.alert("Cancellation reason is required.");
+      return;
+    }
+
+    if (!window.confirm("Are you sure you want to cancel this order?")) {
+      return;
+    }
+
+    try {
+      setUpdating(true);
+      setActionMessage("");
+      setActionError("");
+
+      const response = await cancelAdminOrder(orderId, reason.trim());
+
+      setActionMessage(
+        response.message || "Order cancelled successfully."
+      );
+
+      await fetchOrderDetails();
+    } catch (err) {
+      setActionError(err.message || "Unable to cancel order.");
+    } finally {
+      setUpdating(false);
+    }
+  };
+
+  const handleMarkReturned = async () => {
+    if (
+      !window.confirm(
+        "Confirm that the returned product has been physically received?"
+      )
+    ) {
+      return;
+    }
+
+    try {
+      setReturning(true);
+      setActionMessage("");
+      setActionError("");
+
+      const response = await markAdminOrderReturned(orderId);
+
+      setActionMessage(
+        response.message || "Product received and stock restored."
+      );
+
+      await fetchOrderDetails();
+    } catch (err) {
+      setActionError(
+        err.message || "Unable to mark product as received."
+      );
+    } finally {
+      setReturning(false);
     }
   };
 
@@ -442,23 +511,59 @@ export default function AdminOrderDetailsPage() {
                 )}
 
                 {order.status === "SHIPPED" && (
-                <div className="bg-green-50 border border-green-200 p-4">
+                  <div className="bg-green-50 border border-green-200 p-4">
                     <p className="text-sm font-medium text-green-800">
-                    Order has been shipped.
+                      Order has been shipped.
                     </p>
 
                     <p className="text-xs text-green-700 mt-1">
-                    Further delivery confirmation is not available in the current admin workflow.
+                      Further delivery confirmation is not available in the current admin workflow.
                     </p>
-                </div>
+                  </div>
                 )}
 
                 {order.status === "CANCELLED" && (
-                <div className="bg-red-50 border border-red-200 p-4">
+                  <div className="bg-red-50 border border-red-200 p-4">
                     <p className="text-sm font-medium text-red-700">
-                    This order has been cancelled.
+                      This order has been cancelled.
                     </p>
-                </div>
+                  </div>
+                )}
+
+                {["PENDING", "CONFIRMED", "PROCESSING", "SHIPPED"].includes(
+                  order.status
+                ) && (
+                  <button
+                    disabled={updating}
+                    onClick={handleCancelOrder}
+                    className="w-full px-5 py-3 border border-red-300 text-red-600 text-sm hover:bg-red-600 hover:text-white disabled:opacity-50"
+                  >
+                    {updating ? "Cancelling..." : "Cancel Order"}
+                  </button>
+                )}
+
+                {order.status === "CANCELLED" &&
+                  timeline.some(
+                    (event) =>
+                      event.previous_status === "SHIPPED" &&
+                      event.new_status === "CANCELLED"
+                  ) &&
+                  !order.stock_restored_at && (
+                    <button
+                      disabled={returning}
+                      onClick={handleMarkReturned}
+                      className="w-full px-5 py-3 bg-[#18352B] text-white text-sm hover:bg-[#244638] disabled:opacity-50"
+                    >
+                      {returning ? "Updating..." : "Mark Product Received"}
+                    </button>
+                  )}
+
+                {order.status === "CANCELLED" && order.stock_restored_at && (
+                  <div className="bg-green-50 border border-green-200 p-4">
+                    <p className="text-sm font-medium text-green-800">
+                      Product received. Stock has been restored.
+                    </p>
+                  </div>
                 )}
 
                 {actionMessage && (

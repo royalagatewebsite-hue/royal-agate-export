@@ -142,6 +142,60 @@ class AdminOrderConfirmView(APIView):
             status=status.HTTP_200_OK
         )
         
+class AdminOrderCancelView(APIView):
+
+    permission_classes = [IsAuthenticated, IsAdmin]
+
+    def post(self, request, pk):
+
+        serializer = CancellationRequestSerializer(
+            data=request.data
+        )
+        serializer.is_valid(raise_exception=True)
+
+        order, cancellation = OrderService.admin_cancel_order(
+            order_id=pk,
+            admin_user=request.user,
+            reason=serializer.validated_data["reason"]
+        )
+
+        message = (
+            "Order cancelled successfully. Product return is pending."
+            if order.stock_restored_at is None
+            else "Order cancelled successfully. Stock restored."
+        )
+
+        return Response(
+            {
+                "message": message,
+                "order": AdminOrderSerializer(order).data,
+                "cancellation": OrderCancellationSerializer(
+                    cancellation
+                ).data
+            },
+            status=status.HTTP_200_OK
+        )
+
+
+class AdminOrderMarkReturnedView(APIView):
+
+    permission_classes = [IsAuthenticated, IsAdmin]
+
+    def post(self, request, pk):
+
+        order = OrderService.mark_returned_and_restore_stock(
+            order_id=pk,
+            admin_user=request.user
+        )
+
+        return Response(
+            {
+                "message": "Product received successfully. Stock restored.",
+                "order": AdminOrderSerializer(order).data
+            },
+            status=status.HTTP_200_OK
+        )
+        
 class CustomerCancellationListView(ListAPIView):
 
     serializer_class = OrderCancellationSerializer

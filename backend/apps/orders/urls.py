@@ -15,7 +15,9 @@ from .views import (
     AdminOrderListView,
     AdminOrderDetailView,
     AdminDashboardStatsView,
-    AdminOrderTimelineView
+    AdminOrderTimelineView,
+    AdminOrderCancelView,
+    AdminOrderMarkReturnedView,
 )
 
 
@@ -121,6 +123,18 @@ urlpatterns = [
         "admin/<int:pk>/timeline/",
         AdminOrderTimelineView.as_view(),
         name="admin-order-timeline",
+    ),
+    
+    path(
+        "admin/<int:pk>/cancel/",
+        AdminOrderCancelView.as_view(),
+        name="admin-order-cancel"
+    ),
+
+    path(
+        "admin/<int:pk>/mark-returned/",
+        AdminOrderMarkReturnedView.as_view(),
+        name="admin-order-mark-returned"
     ),
 
 ]

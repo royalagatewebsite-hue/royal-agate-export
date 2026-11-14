@@ -22,8 +22,8 @@ const quickLinks = [
 ];
 
 const collections = [
-  { name: "Natural Agate Stones", href: "/category/agate" },
-  { name: "Agate Jewellery", href: "/category/jewellery" },
+  { name: "Crystal & Agate Gemstones", href: "/category/agate" },
+  { name: "Gemstones Jewellery", href: "/category/jewellery" },
   { name: "Home Decoration", href: "/category/home-decoration" },
   { name: "Crystal Collection", href: "/category/crystal-collection" },
 ];

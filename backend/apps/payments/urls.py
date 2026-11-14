@@ -10,6 +10,7 @@ from .views import (
     RazorpayWebhookView,
     RazorpayOrderCreateView,
     RazorpayPaymentVerifyView,
+    AdminPaymentLookupView,
 
     # Refund views
     RefundListCreateView,
@@ -75,6 +76,12 @@ urlpatterns = [
         "<int:payment_id>/finalize-failure/",
         PaymentFailureFinalizeView.as_view(),
         name="payment-finalize-failure",
+    ),
+    
+    path(
+        "admin/lookup/<int:payment_id>/",
+        AdminPaymentLookupView.as_view(),
+        name="admin-payment-lookup",
     ),
 
     # ==========================================

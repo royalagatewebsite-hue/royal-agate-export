@@ -376,6 +376,273 @@ class OrderService:
             )
 
         return cancellation
+    
+    @staticmethod
+    @transaction.atomic
+    def admin_cancel_order(order_id, admin_user, reason):
+        # 1. Validate cancellation reason.
+        reason = (reason or "").strip()
+
+        if not reason:
+            raise ValidationError({
+                "reason": "Cancellation reason is required."
+            })
+
+        # 2. Lock the order.
+        try:
+            order = Order.objects.select_for_update().get(pk=order_id)
+        except Order.DoesNotExist:
+            raise ValidationError("Order does not exist.")
+
+        # 3. Validate order status.
+        allowed_statuses = [
+            Order.OrderStatus.PENDING,
+            Order.OrderStatus.CONFIRMED,
+            Order.OrderStatus.PROCESSING,
+            Order.OrderStatus.SHIPPED,
+        ]
+
+        if order.status not in allowed_statuses:
+            raise ValidationError("This order cannot be cancelled.")
+
+        # 4. Do not allow cancellation while another request is pending.
+        if OrderCancellation.objects.filter(
+            order=order,
+            status=OrderCancellation.CancellationStatus.REQUESTED,
+        ).exists():
+            raise ValidationError(
+                "Resolve the pending cancellation request first."
+            )
+
+        # 5. Validate stock deduction.
+        if order.stock_deducted_at is None:
+            raise ValidationError(
+                "Cannot cancel this order because stock deduction "
+                "was not recorded."
+            )
+
+        if order.stock_restored_at is not None:
+            raise ValidationError("Stock has already been restored.")
+
+        previous_status = order.status
+        is_shipped = previous_status == Order.OrderStatus.SHIPPED
+
+        # 6. Restore stock immediately only for non-shipped orders.
+        if not is_shipped:
+            order_items = list(
+                OrderItem.objects
+                .select_related("product")
+                .filter(order=order)
+                .order_by("product_id", "pk")
+            )
+
+            if not order_items:
+                raise ValidationError(
+                    "Cannot cancel an order without order items."
+                )
+
+            product_quantities = {}
+
+            for item in order_items:
+                if item.product_id is None:
+                    raise ValidationError(
+                        f"Product for order item '{item.product_name}' "
+                        "no longer exists."
+                    )
+
+                if item.product_id not in product_quantities:
+                    product_quantities[item.product_id] = {
+                        "product": item.product,
+                        "quantity": 0,
+                    }
+
+                product_quantities[item.product_id]["quantity"] += (
+                    item.quantity
+                )
+
+            for product_id in sorted(product_quantities):
+                stock_data = product_quantities[product_id]
+
+                InventoryService.increase_stock(
+                    product=stock_data["product"],
+                    quantity=stock_data["quantity"],
+                    reason=(
+                        f"Stock restored for admin-cancelled order "
+                        f"{order.order_number}"
+                    ),
+                    created_by=admin_user,
+                )
+
+            order.stock_restored_at = timezone.now()
+
+        # For shipped orders, stock restoration is deliberately postponed.
+        order.status = Order.OrderStatus.CANCELLED
+
+        order.save(
+            update_fields=[
+                "status",
+                "stock_restored_at",
+                "updated_at",
+            ]
+        )
+
+        # 7. Create cancellation record.
+        cancellation = OrderCancellation.objects.create(
+            order=order,
+            requested_by=admin_user,
+            reason=reason,
+            status=OrderCancellation.CancellationStatus.DIRECT_CANCELLED,
+            admin_note=(
+                "Cancelled by admin. Stock restoration pending "
+                "until the product is physically received."
+                if is_shipped
+                else "Cancelled directly by admin. Stock restored."
+            ),
+            reviewed_by=admin_user,
+            reviewed_at=timezone.now(),
+        )
+
+        # 8. Record status history.
+        OrderService.record_status_history(
+            order=order,
+            previous_status=previous_status,
+            new_status=Order.OrderStatus.CANCELLED,
+            changed_by=admin_user,
+            note=(
+                f"Order cancelled by admin. "
+                f"{'Stock restoration pending until product is received. ' if is_shipped else 'Stock restored. '}"
+                f"Reason: {reason}"
+            ),
+        )
+
+        return order, cancellation
+
+    @staticmethod
+    @transaction.atomic
+    def mark_returned_and_restore_stock(order_id, admin_user):
+        # 1. Lock the order.
+        try:
+            order = Order.objects.select_for_update().get(pk=order_id)
+        except Order.DoesNotExist:
+            raise ValidationError("Order does not exist.")
+
+        # 2. Validate order status.
+        if order.status != Order.OrderStatus.CANCELLED:
+            raise ValidationError(
+                "Only cancelled orders can be marked as returned."
+            )
+
+        # 3. Ensure this was originally a shipped order.
+        shipped_cancellation_exists = OrderStatusHistory.objects.filter(
+            order=order,
+            previous_status=Order.OrderStatus.SHIPPED,
+            new_status=Order.OrderStatus.CANCELLED,
+        ).exists()
+
+        if not shipped_cancellation_exists:
+            raise ValidationError(
+                "Stock can only be restored through this action "
+                "for cancelled shipped orders."
+            )
+
+        # 4. Validate stock restoration state.
+        if order.stock_deducted_at is None:
+            raise ValidationError(
+                "Stock deduction was not recorded for this order."
+            )
+
+        if order.stock_restored_at is not None:
+            raise ValidationError("Stock has already been restored.")
+
+        # 5. Fetch and validate order items.
+        order_items = list(
+            OrderItem.objects
+            .select_related("product")
+            .filter(order=order)
+            .order_by("product_id", "pk")
+        )
+
+        if not order_items:
+            raise ValidationError(
+                "Cannot restore stock without order items."
+            )
+
+        product_quantities = {}
+
+        for item in order_items:
+            if item.product_id is None:
+                raise ValidationError(
+                    f"Product for order item '{item.product_name}' "
+                    "no longer exists."
+                )
+
+            if item.product_id not in product_quantities:
+                product_quantities[item.product_id] = {
+                    "product": item.product,
+                    "quantity": 0,
+                }
+
+            product_quantities[item.product_id]["quantity"] += (
+                item.quantity
+            )
+
+        # 6. Restore stock.
+        for product_id in sorted(product_quantities):
+            stock_data = product_quantities[product_id]
+
+            InventoryService.increase_stock(
+                product=stock_data["product"],
+                quantity=stock_data["quantity"],
+                reason=(
+                    f"Stock restored after returned cancelled order "
+                    f"{order.order_number}"
+                ),
+                created_by=admin_user,
+            )
+
+        # 7. Update restoration timestamp.
+        order.stock_restored_at = timezone.now()
+        order.save(update_fields=["stock_restored_at", "updated_at"])
+
+        # 8. Update cancellation record.
+        cancellation = (
+            OrderCancellation.objects
+            .filter(
+                order=order,
+                status=OrderCancellation.CancellationStatus.DIRECT_CANCELLED,
+            )
+            .order_by("-requested_at")
+            .first()
+        )
+
+        if cancellation:
+            existing_note = cancellation.admin_note or ""
+            cancellation.admin_note = (
+                f"{existing_note} Product physically received; "
+                "stock restored by admin."
+            ).strip()
+
+            cancellation.reviewed_by = admin_user
+            cancellation.reviewed_at = timezone.now()
+
+            cancellation.save(
+                update_fields=[
+                    "admin_note",
+                    "reviewed_by",
+                    "reviewed_at",
+                ]
+            )
+
+        # 9. Record the stock restoration event.
+        OrderService.record_status_history(
+            order=order,
+            previous_status=Order.OrderStatus.CANCELLED,
+            new_status=Order.OrderStatus.CANCELLED,
+            changed_by=admin_user,
+            note="Returned product physically received. Stock restored.",
+        )
+
+        return order
 
     @staticmethod
     @transaction.atomic
