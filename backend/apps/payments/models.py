@@ -318,3 +318,109 @@ class PaymentWebhookEvent(models.Model):
 
     def __str__(self):
         return f"{self.event_type} - {self.event_id}"
+    
+class CheckoutPaymentSession(models.Model):
+
+    class SessionStatus(models.TextChoices):
+        CREATED = "CREATED", "Created"
+        INITIATED = "INITIATED", "Payment Initiated"
+        SUCCESS = "SUCCESS", "Success"
+        FAILED = "FAILED", "Failed"
+        REFUND_REQUIRED = "REFUND_REQUIRED", "Refund Required"
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="checkout_payment_sessions",
+    )
+
+    # Snapshot of the delivery address at checkout time.
+    address_snapshot = models.JSONField(default=dict)
+
+    # Snapshot of cart items, quantities, prices and totals.
+    checkout_snapshot = models.JSONField(default=dict)
+
+    amount = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        validators=[MinValueValidator(Decimal("0.01"))],
+    )
+
+    currency = models.CharField(
+        max_length=3,
+        default="INR",
+    )
+
+    status = models.CharField(
+        max_length=30,
+        choices=SessionStatus.choices,
+        default=SessionStatus.CREATED,
+    )
+
+    idempotency_key = models.CharField(
+        max_length=100,
+        unique=True,
+    )
+
+    gateway_order_id = models.CharField(
+        max_length=255,
+        blank=True,
+    )
+
+    gateway_payment_id = models.CharField(
+        max_length=255,
+        blank=True,
+    )
+
+    # Linked only after successful payment and order creation.
+    order = models.OneToOneField(
+        "orders.Order",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="checkout_payment_session",
+    )
+
+    failure_reason = models.TextField(blank=True)
+
+    expires_at = models.DateTimeField(
+        null=True,
+        blank=True,
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+        indexes = [
+            models.Index(
+                fields=["user", "-created_at"],
+                name="checkout_session_user_idx",
+            ),
+            models.Index(
+                fields=["status"],
+                name="checkout_session_status_idx",
+            ),
+        ]
+
+        constraints = [
+            models.CheckConstraint(
+                condition=Q(amount__gt=0),
+                name="checkout_session_amount_gt_0",
+            ),
+            models.UniqueConstraint(
+                fields=["gateway_order_id"],
+                condition=~Q(gateway_order_id=""),
+                name="unique_checkout_gateway_order",
+            ),
+            models.UniqueConstraint(
+                fields=["gateway_payment_id"],
+                condition=~Q(gateway_payment_id=""),
+                name="unique_checkout_gateway_payment",
+            ),
+        ]
+
+    def __str__(self):
+        return f"Checkout Session - {self.idempotency_key}"

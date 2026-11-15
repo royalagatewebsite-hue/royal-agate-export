@@ -57,6 +57,46 @@ export const verifyRazorpayPayment = async ({
 };
 
 // ==========================================
+// RAZORPAY PAYMENT-FIRST CHECKOUT APIs
+// ==========================================
+
+const RAZORPAY_CHECKOUT_SESSION_ENDPOINT =
+  "/payments/razorpay/checkout-session/";
+
+const RAZORPAY_CHECKOUT_VERIFY_ENDPOINT =
+  "/payments/razorpay/checkout-verify/";
+
+// Create checkout session without creating an internal order
+export const createRazorpayCheckoutSession = async ({
+  addressId,
+  idempotencyKey,
+}) => {
+  return apiRequest(RAZORPAY_CHECKOUT_SESSION_ENDPOINT, {
+    method: "POST",
+    body: {
+      address_id: addressId,
+      idempotency_key: idempotencyKey,
+    },
+  });
+};
+
+// Verify payment and create internal order after successful payment
+export const verifyRazorpayCheckoutPayment = async ({
+  razorpay_order_id,
+  razorpay_payment_id,
+  razorpay_signature,
+}) => {
+  return apiRequest(RAZORPAY_CHECKOUT_VERIFY_ENDPOINT, {
+    method: "POST",
+    body: {
+      razorpay_order_id,
+      razorpay_payment_id,
+      razorpay_signature,
+    },
+  });
+};
+
+// ==========================================
 // ADMIN REFUND APIs
 // ==========================================
 

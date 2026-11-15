@@ -21,6 +21,8 @@ from .serializers import (
     RefundFailSerializer,
     RazorpayOrderCreateSerializer,
     RazorpayPaymentVerifySerializer,
+    RazorpayCheckoutSessionCreateSerializer,
+    RazorpayCheckoutSessionVerifySerializer,
 )
 from .services import PaymentService, RefundService
 
@@ -154,6 +156,96 @@ class RazorpayPaymentVerifyView(APIView):
             {
                 "message": "Razorpay payment verified successfully.",
                 "attempt": PaymentAttemptSerializer(attempt).data,
+            },
+            status=status.HTTP_200_OK,
+        )
+        
+# =========================================================
+# RAZORPAY PAYMENT-FIRST CHECKOUT APIs
+# =========================================================
+
+class RazorpayCheckoutSessionCreateView(APIView):
+    """
+    Creates a Razorpay checkout session without creating
+    an internal order or deducting inventory.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        serializer = RazorpayCheckoutSessionCreateSerializer(
+            data=request.data
+        )
+        serializer.is_valid(raise_exception=True)
+
+        session = PaymentService.create_checkout_session(
+            user=request.user,
+            address_id=serializer.validated_data["address_id"],
+            idempotency_key=serializer.validated_data["idempotency_key"],
+        )
+
+        return Response(
+            {
+                "message": "Razorpay checkout session created successfully.",
+                "session_id": session.id,
+                "key_id": settings.RAZORPAY_KEY_ID,
+                "razorpay_order_id": session.gateway_order_id,
+                "amount": int(session.amount * 100),
+                "currency": session.currency,
+                "status": session.status,
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class RazorpayCheckoutSessionVerifyView(APIView):
+    """
+    Verifies captured Razorpay payment and creates the internal
+    order only after successful verification.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        serializer = RazorpayCheckoutSessionVerifySerializer(
+            data=request.data
+        )
+        serializer.is_valid(raise_exception=True)
+
+        session = PaymentService.verify_checkout_session(
+            razorpay_order_id=serializer.validated_data[
+                "razorpay_order_id"
+            ],
+            razorpay_payment_id=serializer.validated_data[
+                "razorpay_payment_id"
+            ],
+            razorpay_signature=serializer.validated_data[
+                "razorpay_signature"
+            ],
+            user=request.user,
+        )
+
+        if session.status == "REFUND_REQUIRED":
+            return Response(
+                {
+                    "message": (
+                        "Payment was captured, but checkout could not "
+                        "be completed. Manual refund reconciliation "
+                        "is required."
+                    ),
+                    "session_id": session.id,
+                    "status": session.status,
+                },
+                status=status.HTTP_202_ACCEPTED,
+            )
+
+        return Response(
+            {
+                "message": "Payment verified and order created successfully.",
+                "session_id": session.id,
+                "status": session.status,
+                "order_id": session.order_id,
+                "order_number": session.order.order_number,
             },
             status=status.HTTP_200_OK,
         )

@@ -93,6 +93,45 @@ class RazorpayPaymentVerifySerializer(serializers.Serializer):
         allow_blank=False,
         trim_whitespace=True,
     )
+    
+# =====================================================
+# RAZORPAY CHECKOUT SESSION SERIALIZERS
+# =====================================================
+
+class RazorpayCheckoutSessionCreateSerializer(serializers.Serializer):
+
+    address_id = serializers.IntegerField(min_value=1)
+
+    idempotency_key = serializers.CharField(
+        max_length=100,
+        required=True,
+        allow_blank=False,
+        trim_whitespace=True,
+    )
+
+
+class RazorpayCheckoutSessionVerifySerializer(serializers.Serializer):
+
+    razorpay_order_id = serializers.CharField(
+        max_length=255,
+        required=True,
+        allow_blank=False,
+        trim_whitespace=True,
+    )
+
+    razorpay_payment_id = serializers.CharField(
+        max_length=255,
+        required=True,
+        allow_blank=False,
+        trim_whitespace=True,
+    )
+
+    razorpay_signature = serializers.CharField(
+        max_length=255,
+        required=True,
+        allow_blank=False,
+        trim_whitespace=True,
+    )
 
 
 # =====================================================

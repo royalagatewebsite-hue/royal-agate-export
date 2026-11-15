@@ -11,11 +11,16 @@ from rest_framework.exceptions import ValidationError
 
 from apps.orders.models import Order, OrderItem, OrderStatusHistory
 from apps.inventory.services import InventoryService
+from apps.cart.services import CartService
+from apps.orders.services import OrderService
+
+from datetime import timedelta
 
 from .models import (
     Payment,
     PaymentAttempt,
     PaymentWebhookEvent,
+    CheckoutPaymentSession,
     Refund,
 )
 
@@ -205,6 +210,505 @@ class PaymentService:
         Payment.PaymentMethod.CASH,
         Payment.PaymentMethod.BANK_TRANSFER,
     ]
+    
+    @staticmethod
+    def create_checkout_session(user, address_id, idempotency_key):
+        """
+        Create a Razorpay checkout session without creating
+        an internal Order or deducting inventory.
+        """
+
+        # 1. Validate Razorpay configuration.
+        key_id = getattr(settings, "RAZORPAY_KEY_ID", "")
+        key_secret = getattr(settings, "RAZORPAY_KEY_SECRET", "")
+
+        if not key_id or not key_secret:
+            raise ValidationError("Razorpay is not configured.")
+
+        # 2. Validate idempotency key.
+        idempotency_key = (idempotency_key or "").strip()
+
+        if not idempotency_key:
+            raise ValidationError("Idempotency key is required.")
+
+        if len(idempotency_key) > 100:
+            raise ValidationError("Invalid idempotency key.")
+
+        # 3. Validate checkout.
+        checkout_data = CartService.validate_checkout(
+            user=user,
+            address_id=address_id,
+        )
+
+        address = checkout_data["address"]
+
+        # 4. Build permanent address snapshot.
+        address_snapshot = {
+            "full_name": address.full_name,
+            "phone_number": address.phone_number,
+            "address_line_1": address.address_line_1,
+            "address_line_2": "",
+            "address_id": address.id,
+            "district": address.district,
+            "city": address.city,
+            "state": address.state,
+            "pincode": address.pincode,
+            "country": address.country,
+        }
+
+        # 5. Build cart snapshot.
+        cart_snapshot_items = []
+
+        for item_data in checkout_data["items"]:
+            cart_item = item_data["cart_item"]
+
+            cart_snapshot_items.append({
+                "cart_item_id": cart_item.id,
+                "product_id": cart_item.product_id,
+                "product_name": cart_item.product.name,
+                "product_sku": cart_item.product.sku,
+                "purchase_mode": cart_item.purchase_mode,
+                "quantity": cart_item.quantity,
+                "unit_price": str(item_data["unit_price"]),
+                "subtotal": str(item_data["subtotal"]),
+            })
+
+        checkout_snapshot = {
+            "items": cart_snapshot_items,
+            "total_items": checkout_data["total_items"],
+            "subtotal": str(checkout_data["subtotal"]),
+            "shipping_charge": "0.00",
+            "discount": "0.00",
+            "total_amount": str(checkout_data["total_amount"]),
+        }
+
+        amount = checkout_data["total_amount"]
+
+        amount_in_paise = int(amount * 100)
+
+        if amount_in_paise <= 0:
+            raise ValidationError("Invalid checkout amount.")
+
+        # 6. Check existing session for idempotency.
+        with transaction.atomic():
+
+            existing_session = (
+                CheckoutPaymentSession.objects
+                .select_for_update()
+                .filter(idempotency_key=idempotency_key)
+                .first()
+            )
+
+            if existing_session:
+
+                if existing_session.user_id != user.id:
+                    raise ValidationError(
+                        "Idempotency key has already been used."
+                    )
+
+                if (
+                    existing_session.address_snapshot != address_snapshot
+                    or existing_session.checkout_snapshot != checkout_snapshot
+                    or existing_session.amount != amount
+                ):
+                    raise ValidationError(
+                        "Idempotency key has already been used "
+                        "for a different checkout."
+                    )
+
+                if existing_session.gateway_order_id:
+                    return existing_session
+
+                if existing_session.status in [
+                    CheckoutPaymentSession.SessionStatus.SUCCESS,
+                    CheckoutPaymentSession.SessionStatus.FAILED,
+                    CheckoutPaymentSession.SessionStatus.REFUND_REQUIRED,
+                ]:
+                    raise ValidationError(
+                        "This checkout session cannot be reused."
+                    )
+
+                session = existing_session
+
+            else:
+                session = CheckoutPaymentSession.objects.create(
+                    user=user,
+                    address_snapshot=address_snapshot,
+                    checkout_snapshot=checkout_snapshot,
+                    amount=amount,
+                    currency="INR",
+                    status=CheckoutPaymentSession.SessionStatus.CREATED,
+                    idempotency_key=idempotency_key,
+                    expires_at=timezone.now() + timedelta(minutes=15),
+                )
+
+            # 7. Create Razorpay order.
+            client = razorpay.Client(
+                auth=(key_id, key_secret)
+            )
+
+            try:
+                razorpay_order = client.order.create(
+                    data={
+                        "amount": amount_in_paise,
+                        "currency": "INR",
+                        "receipt": f"checkout-{session.pk}",
+                        "notes": {
+                            "checkout_session_id": str(session.pk),
+                            "customer_id": str(user.id),
+                        },
+                    }
+                )
+
+            except Exception:
+                raise ValidationError(
+                    "Unable to create Razorpay order. Please try again."
+                )
+
+            gateway_order_id = razorpay_order.get("id")
+
+            if not gateway_order_id:
+                raise ValidationError(
+                    "Razorpay did not return a valid order ID."
+                )
+
+            # 8. Save Razorpay order details.
+            session.gateway_order_id = gateway_order_id
+            session.status = (
+                CheckoutPaymentSession.SessionStatus.INITIATED
+            )
+
+            session.save(
+                update_fields=[
+                    "gateway_order_id",
+                    "status",
+                    "updated_at",
+                ]
+            )
+
+            return session
+        
+    @staticmethod
+    def verify_checkout_session(
+        razorpay_order_id,
+        razorpay_payment_id,
+        razorpay_signature,
+        user,
+    ):
+        key_id = getattr(settings, "RAZORPAY_KEY_ID", "")
+        key_secret = getattr(settings, "RAZORPAY_KEY_SECRET", "")
+
+        if not key_id or not key_secret:
+            raise ValidationError("Razorpay is not configured.")
+
+        if not all([
+            razorpay_order_id,
+            razorpay_payment_id,
+            razorpay_signature,
+        ]):
+            raise ValidationError(
+                "Payment verification details are required."
+            )
+
+        client = razorpay.Client(auth=(key_id, key_secret))
+
+        # 1. Verify Razorpay signature.
+        try:
+            client.utility.verify_payment_signature({
+                "razorpay_order_id": razorpay_order_id,
+                "razorpay_payment_id": razorpay_payment_id,
+                "razorpay_signature": razorpay_signature,
+            })
+        except Exception:
+            raise ValidationError("Invalid Razorpay payment signature.")
+
+        # 2. Fetch payment directly from Razorpay.
+        try:
+            gateway_payment = client.payment.fetch(
+                razorpay_payment_id
+            )
+        except Exception:
+            raise ValidationError(
+                "Unable to verify payment with Razorpay."
+            )
+
+        # 3. Verify captured payment details.
+        if gateway_payment.get("order_id") != razorpay_order_id:
+            raise ValidationError("Gateway order ID mismatch.")
+
+        if gateway_payment.get("status") != "captured":
+            raise ValidationError("Payment has not been captured.")
+
+        if gateway_payment.get("currency") != "INR":
+            raise ValidationError("Invalid payment currency.")
+
+        with transaction.atomic():
+
+            # 4. Lock checkout session.
+            try:
+                session = (
+                    CheckoutPaymentSession.objects
+                    .select_for_update()
+                    .get(
+                        gateway_order_id=razorpay_order_id,
+                        user=user,
+                    )
+                )
+            except CheckoutPaymentSession.DoesNotExist:
+                raise ValidationError(
+                    "Checkout payment session not found."
+                )
+
+            # 5. Handle duplicate verification.
+            if (
+                session.status == CheckoutPaymentSession.SessionStatus.SUCCESS
+                and session.gateway_payment_id == razorpay_payment_id
+                and session.order_id
+            ):
+                return session
+
+            if session.status == (
+                CheckoutPaymentSession.SessionStatus.REFUND_REQUIRED
+            ):
+                raise ValidationError(
+                    "Payment requires manual refund reconciliation."
+                )
+
+            if session.status != (
+                CheckoutPaymentSession.SessionStatus.INITIATED
+            ):
+                raise ValidationError(
+                    "Checkout session is not active."
+                )
+
+            if session.gateway_payment_id:
+                if session.gateway_payment_id != razorpay_payment_id:
+                    raise ValidationError(
+                        "A different payment is already associated "
+                        "with this session."
+                    )
+
+            # 6. Verify amount.
+            expected_amount = int(session.amount * 100)
+
+            if gateway_payment.get("amount") != expected_amount:
+
+                session.status = (
+                    CheckoutPaymentSession.SessionStatus.REFUND_REQUIRED
+                )
+
+                payment_id_in_use = (
+                    CheckoutPaymentSession.objects
+                    .filter(gateway_payment_id=razorpay_payment_id)
+                    .exclude(pk=session.pk)
+                    .exists()
+                )
+
+                if not payment_id_in_use:
+                    session.gateway_payment_id = razorpay_payment_id
+
+                session.failure_reason = (
+                    "Payment was captured, but the gateway amount "
+                    "does not match the checkout session amount. "
+                    "Manual refund reconciliation is required."
+                )
+
+                if payment_id_in_use:
+                    session.failure_reason += (
+                        " Gateway payment ID is already associated "
+                        "with another checkout session."
+                    )
+
+                session.save(
+                    update_fields=[
+                        "status",
+                        "gateway_payment_id",
+                        "failure_reason",
+                        "updated_at",
+                    ]
+                )
+
+                return session
+
+            # 7. Revalidate current cart and address.
+            try:
+                checkout_data = CartService.validate_checkout(
+                    user=user,
+                    address_id=session.address_snapshot["address_id"],
+                )
+
+                address = checkout_data["address"]
+
+                current_address_snapshot = {
+                    "full_name": address.full_name,
+                    "phone_number": address.phone_number,
+                    "address_line_1": address.address_line_1,
+                    "address_line_2": "",
+                    "address_id": address.id,
+                    "district": address.district,
+                    "city": address.city,
+                    "state": address.state,
+                    "pincode": address.pincode,
+                    "country": address.country,
+                }
+
+                current_items = []
+
+                for item_data in checkout_data["items"]:
+                    cart_item = item_data["cart_item"]
+
+                    current_items.append({
+                        "cart_item_id": cart_item.id,
+                        "product_id": cart_item.product_id,
+                        "product_name": cart_item.product.name,
+                        "product_sku": cart_item.product.sku,
+                        "purchase_mode": cart_item.purchase_mode,
+                        "quantity": cart_item.quantity,
+                        "unit_price": str(item_data["unit_price"]),
+                        "subtotal": str(item_data["subtotal"]),
+                    })
+
+                current_checkout_snapshot = {
+                    "items": current_items,
+                    "total_items": checkout_data["total_items"],
+                    "subtotal": str(checkout_data["subtotal"]),
+                    "shipping_charge": "0.00",
+                    "discount": "0.00",
+                    "total_amount": str(checkout_data["total_amount"]),
+                }
+
+                checkout_is_valid = (
+                    current_address_snapshot == session.address_snapshot
+                    and current_checkout_snapshot == session.checkout_snapshot
+                    and checkout_data["total_amount"] == session.amount
+                )
+
+            except (ValidationError, KeyError):
+                checkout_is_valid = False
+
+            # 8. Captured payment but checkout is no longer valid.
+            if not checkout_is_valid:
+                session.status = (
+                    CheckoutPaymentSession.SessionStatus.REFUND_REQUIRED
+                )
+
+                payment_id_in_use = (
+                    CheckoutPaymentSession.objects
+                    .filter(gateway_payment_id=razorpay_payment_id)
+                    .exclude(pk=session.pk)
+                    .exists()
+                )
+
+                if not payment_id_in_use:
+                    session.gateway_payment_id = razorpay_payment_id
+
+                session.failure_reason = (
+                    "Payment captured, but checkout data changed "
+                    "or inventory validation failed. "
+                    "Manual refund reconciliation is required."
+                )
+
+                if payment_id_in_use:
+                    session.failure_reason += (
+                        " Gateway payment ID is already associated "
+                        "with another checkout session."
+                    )
+
+                session.save(
+                    update_fields=[
+                        "status",
+                        "gateway_payment_id",
+                        "failure_reason",
+                        "updated_at",
+                    ]
+                )
+
+                return session
+
+            # 9. Create internal order only after successful payment.
+            order = OrderService.create_order(
+                user=user,
+                address_id=session.address_snapshot["address_id"],
+            )
+
+            # 10. Lock newly created payment record.
+            payment = (
+                Payment.objects
+                .select_for_update()
+                .get(order=order)
+            )
+
+            if payment.status != Payment.PaymentStatus.PENDING:
+                raise ValidationError(
+                    "New order payment is not in pending state."
+                )
+
+            # 11. Generate payment attempt number.
+            last_attempt = (
+                PaymentAttempt.objects
+                .filter(payment=payment)
+                .aggregate(max_attempt=Max("attempt_number"))
+            )
+
+            attempt_number = (
+                last_attempt["max_attempt"] or 0
+            ) + 1
+
+            # 12. Create successful Razorpay attempt.
+            PaymentAttempt.objects.create(
+                payment=payment,
+                attempt_number=attempt_number,
+                payment_method=Payment.PaymentMethod.RAZORPAY,
+                status=PaymentAttempt.AttemptStatus.SUCCESS,
+                idempotency_key=f"checkout-session-{session.pk}",
+                transaction_id=razorpay_payment_id,
+                gateway_order_id=razorpay_order_id,
+                gateway_payment_id=razorpay_payment_id,
+            )
+
+            # 13. Update payment record.
+            payment.payment_method = Payment.PaymentMethod.RAZORPAY
+            payment.status = Payment.PaymentStatus.SUCCESS
+            payment.transaction_id = razorpay_payment_id
+            payment.gateway_order_id = razorpay_order_id
+            payment.gateway_payment_id = razorpay_payment_id
+
+            payment.save(
+                update_fields=[
+                    "payment_method",
+                    "status",
+                    "transaction_id",
+                    "gateway_order_id",
+                    "gateway_payment_id",
+                    "updated_at",
+                ]
+            )
+
+            # 14. Mark order as paid.
+            order.payment_status = Order.PaymentStatus.PAID
+            order.save(
+                update_fields=["payment_status", "updated_at"]
+            )
+
+            # 15. Mark checkout session successful.
+            session.status = (
+                CheckoutPaymentSession.SessionStatus.SUCCESS
+            )
+            session.gateway_payment_id = razorpay_payment_id
+            session.order = order
+            session.failure_reason = ""
+
+            session.save(
+                update_fields=[
+                    "status",
+                    "gateway_payment_id",
+                    "order",
+                    "failure_reason",
+                    "updated_at",
+                ]
+            )
+
+            return session
 
     @staticmethod
     @transaction.atomic
@@ -729,6 +1233,370 @@ class PaymentService:
             try:
                 # 3. Process payment inside a savepoint.
                 with transaction.atomic():
+                    
+                    
+                    # 3. Check whether this belongs to a new checkout session.
+                    session_info = (
+                        CheckoutPaymentSession.objects
+                        .filter(gateway_order_id=gateway_order_id)
+                        .only("pk")
+                        .first()
+                    )
+
+                    if session_info:
+                        session = (
+                            CheckoutPaymentSession.objects
+                            .select_for_update()
+                            .get(pk=session_info.pk)
+                        )
+
+                        # Handle an already completed checkout.
+                        if (
+                            session.status
+                            == CheckoutPaymentSession.SessionStatus.SUCCESS
+                        ):
+                            if session.gateway_payment_id == gateway_payment_id:
+                                event.status = (
+                                    PaymentWebhookEvent.ProcessingStatus.PROCESSED
+                                )
+                                event.processed_at = timezone.now()
+                                event.error_message = ""
+                                event.save(
+                                    update_fields=[
+                                        "status",
+                                        "processed_at",
+                                        "error_message",
+                                        "updated_at",
+                                    ]
+                                )
+
+                                return {
+                                    "processed": True,
+                                    "duplicate": True,
+                                }
+
+                            raise ValidationError(
+                                "Checkout session already has a different successful payment."
+                            )
+
+                        # A captured payment must be verified before order creation.
+                        if event_type == "payment.captured":
+
+                            if payment_entity.get("status") != "captured":
+                                raise ValidationError(
+                                    "Payment is not captured."
+                                )
+
+                            expected_amount = int(session.amount * 100)
+
+                            # Captured amount mismatch requires reconciliation.
+                            if (
+                                amount != expected_amount
+                                or currency != session.currency
+                            ):
+                                session.status = (
+                                    CheckoutPaymentSession.SessionStatus.REFUND_REQUIRED
+                                )
+                                session.failure_reason = (
+                                    "Payment was captured, but the gateway amount "
+                                    "or currency does not match the checkout session. "
+                                    "Manual refund reconciliation is required."
+                                )
+
+                                if not CheckoutPaymentSession.objects.filter(
+                                    gateway_payment_id=gateway_payment_id
+                                ).exclude(pk=session.pk).exists():
+                                    session.gateway_payment_id = gateway_payment_id
+                                    
+                                if (
+                                    session.gateway_payment_id
+                                    and session.gateway_payment_id != gateway_payment_id
+                                ):
+                                    raise ValidationError(
+                                        "A different payment is already associated with this session."
+                                    )
+
+                                session.save(
+                                    update_fields=[
+                                        "status",
+                                        "gateway_payment_id",
+                                        "failure_reason",
+                                        "updated_at",
+                                    ]
+                                )
+
+                            elif session.status == (
+                                CheckoutPaymentSession.SessionStatus.REFUND_REQUIRED
+                            ):
+                                # Do not create an order for a session already
+                                # marked for refund reconciliation.
+                                pass
+                            
+                            elif session.status == CheckoutPaymentSession.SessionStatus.FAILED:
+                                # A late captured payment must never create an order
+                                # after the checkout session has already failed.
+                                payment_id_in_use = (
+                                    CheckoutPaymentSession.objects
+                                    .filter(gateway_payment_id=gateway_payment_id)
+                                    .exclude(pk=session.pk)
+                                    .exists()
+                                )
+
+                                session.status = (
+                                    CheckoutPaymentSession.SessionStatus.REFUND_REQUIRED
+                                )
+
+                                if not payment_id_in_use:
+                                    session.gateway_payment_id = gateway_payment_id
+
+                                session.failure_reason = (
+                                    "Payment was captured after the checkout session failed. "
+                                    "Manual refund reconciliation is required."
+                                )
+
+                                if payment_id_in_use:
+                                    session.failure_reason += (
+                                        " The gateway payment ID is already associated "
+                                        "with another checkout session."
+                                    )
+
+                                session.save(
+                                    update_fields=[
+                                        "status",
+                                        "gateway_payment_id",
+                                        "failure_reason",
+                                        "updated_at",
+                                    ]
+                                )
+
+                            elif session.gateway_payment_id and (
+                                session.gateway_payment_id != gateway_payment_id
+                            ):
+                                raise ValidationError(
+                                    "A different payment is already associated with this session."
+                                )
+
+                            else:
+                                # Revalidate cart, address, prices and inventory.
+                                try:
+                                    checkout_data = CartService.validate_checkout(
+                                        user=session.user,
+                                        address_id=session.address_snapshot["address_id"],
+                                    )
+
+                                    address = checkout_data["address"]
+
+                                    current_address_snapshot = {
+                                        "full_name": address.full_name,
+                                        "phone_number": address.phone_number,
+                                        "address_line_1": address.address_line_1,
+                                        "address_line_2": "",
+                                        "address_id": address.id,
+                                        "district": address.district,
+                                        "city": address.city,
+                                        "state": address.state,
+                                        "pincode": address.pincode,
+                                        "country": address.country,
+                                    }
+
+                                    current_items = []
+
+                                    for item_data in checkout_data["items"]:
+                                        cart_item = item_data["cart_item"]
+
+                                        current_items.append({
+                                            "cart_item_id": cart_item.id,
+                                            "product_id": cart_item.product_id,
+                                            "product_name": cart_item.product.name,
+                                            "product_sku": cart_item.product.sku,
+                                            "purchase_mode": cart_item.purchase_mode,
+                                            "quantity": cart_item.quantity,
+                                            "unit_price": str(item_data["unit_price"]),
+                                            "subtotal": str(item_data["subtotal"]),
+                                        })
+
+                                    current_checkout_snapshot = {
+                                        "items": current_items,
+                                        "total_items": checkout_data["total_items"],
+                                        "subtotal": str(checkout_data["subtotal"]),
+                                        "shipping_charge": "0.00",
+                                        "discount": "0.00",
+                                        "total_amount": str(checkout_data["total_amount"]),
+                                    }
+
+                                    checkout_is_valid = (
+                                        current_address_snapshot == session.address_snapshot
+                                        and current_checkout_snapshot == session.checkout_snapshot
+                                        and checkout_data["total_amount"] == session.amount
+                                    )
+
+                                except (ValidationError, KeyError):
+                                    checkout_is_valid = False
+
+                                if not checkout_is_valid:
+                                    session.status = (
+                                        CheckoutPaymentSession.SessionStatus.REFUND_REQUIRED
+                                    )
+
+                                    payment_id_in_use = (
+                                        CheckoutPaymentSession.objects
+                                        .filter(gateway_payment_id=gateway_payment_id)
+                                        .exclude(pk=session.pk)
+                                        .exists()
+                                    )
+
+                                    if not payment_id_in_use:
+                                        session.gateway_payment_id = gateway_payment_id
+
+                                    session.failure_reason = (
+                                        "Payment captured, but checkout data changed "
+                                        "or inventory validation failed. "
+                                        "Manual refund reconciliation is required."
+                                    )
+
+                                    if payment_id_in_use:
+                                        session.failure_reason += (
+                                            " Gateway payment ID is already associated "
+                                            "with another checkout session."
+                                        )
+
+                                    session.save(
+                                        update_fields=[
+                                            "status",
+                                            "gateway_payment_id",
+                                            "failure_reason",
+                                            "updated_at",
+                                        ]
+                                    )
+
+                                else:
+                                    # Create the internal order only after capture.
+                                    order = OrderService.create_order(
+                                        user=session.user,
+                                        address_id=session.address_snapshot["address_id"],
+                                    )
+
+                                    payment = (
+                                        Payment.objects
+                                        .select_for_update()
+                                        .get(order=order)
+                                    )
+
+                                    if payment.status != Payment.PaymentStatus.PENDING:
+                                        raise ValidationError(
+                                            "New order payment is not pending."
+                                        )
+
+                                    last_attempt = (
+                                        PaymentAttempt.objects
+                                        .filter(payment=payment)
+                                        .aggregate(max_attempt=Max("attempt_number"))
+                                    )
+
+                                    attempt_number = (
+                                        last_attempt["max_attempt"] or 0
+                                    ) + 1
+
+                                    PaymentAttempt.objects.create(
+                                        payment=payment,
+                                        attempt_number=attempt_number,
+                                        payment_method=Payment.PaymentMethod.RAZORPAY,
+                                        status=PaymentAttempt.AttemptStatus.SUCCESS,
+                                        idempotency_key=f"checkout-session-{session.pk}",
+                                        transaction_id=gateway_payment_id,
+                                        gateway_order_id=gateway_order_id,
+                                        gateway_payment_id=gateway_payment_id,
+                                    )
+
+                                    payment.payment_method = Payment.PaymentMethod.RAZORPAY
+                                    payment.status = Payment.PaymentStatus.SUCCESS
+                                    payment.transaction_id = gateway_payment_id
+                                    payment.gateway_order_id = gateway_order_id
+                                    payment.gateway_payment_id = gateway_payment_id
+
+                                    payment.save(
+                                        update_fields=[
+                                            "payment_method",
+                                            "status",
+                                            "transaction_id",
+                                            "gateway_order_id",
+                                            "gateway_payment_id",
+                                            "updated_at",
+                                        ]
+                                    )
+
+                                    order.payment_status = Order.PaymentStatus.PAID
+                                    order.save(
+                                        update_fields=[
+                                            "payment_status",
+                                            "updated_at",
+                                        ]
+                                    )
+
+                                    session.status = (
+                                        CheckoutPaymentSession.SessionStatus.SUCCESS
+                                    )
+                                    session.gateway_payment_id = gateway_payment_id
+                                    session.order = order
+                                    session.failure_reason = ""
+
+                                    session.save(
+                                        update_fields=[
+                                            "status",
+                                            "gateway_payment_id",
+                                            "order",
+                                            "failure_reason",
+                                            "updated_at",
+                                        ]
+                                    )
+
+                        # Handle failed Razorpay payment.
+                        elif event_type == "payment.failed":
+
+                            if payment_entity.get("status") != "failed":
+                                raise ValidationError(
+                                    "Invalid failed payment event."
+                                )
+
+                            if session.status != (
+                                CheckoutPaymentSession.SessionStatus.REFUND_REQUIRED
+                            ):
+                                session.status = (
+                                    CheckoutPaymentSession.SessionStatus.FAILED
+                                )
+                                session.failure_reason = (
+                                    payment_entity.get("error_description")
+                                    or "Razorpay payment failed."
+                                )
+
+                                session.save(
+                                    update_fields=[
+                                        "status",
+                                        "failure_reason",
+                                        "updated_at",
+                                    ]
+                                )
+
+                        # Mark this webhook event processed.
+                        event.status = (
+                            PaymentWebhookEvent.ProcessingStatus.PROCESSED
+                        )
+                        event.processed_at = timezone.now()
+                        event.error_message = ""
+
+                        event.save(
+                            update_fields=[
+                                "status",
+                                "processed_at",
+                                "error_message",
+                                "updated_at",
+                            ]
+                        )
+
+                        return {
+                            "processed": True,
+                            "duplicate": False,
+                        }
 
                     attempt_info = (
                         PaymentAttempt.objects

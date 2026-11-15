@@ -17,6 +17,7 @@ import {
   createProduct,
   updateProduct,
   createProductImage,
+  deleteProductImage,
   updateProductImage,
   createProductVideo,
   deleteProductVideo,
@@ -66,6 +67,8 @@ const AdminProductFormPage = () => {
 
   const [videos, setVideos] = useState([]);
   const [removedVideoIds, setRemovedVideoIds] = useState([]);
+
+  const [removedImageIds, setRemovedImageIds] = useState([]);
 
   const [inventoryData, setInventoryData] = useState({
         id: null,
@@ -278,29 +281,33 @@ const AdminProductFormPage = () => {
 
 
     const removeImage = (index) => {
-        setImages((previous) => {
-            const imageToRemove = previous[index];
+      setImages((previous) => {
+        const imageToRemove = previous[index];
 
-            if (imageToRemove?.file && imageToRemove.preview) {
-            URL.revokeObjectURL(imageToRemove.preview);
-            }
+        if (imageToRemove?.id) {
+          setRemovedImageIds((ids) => [...ids, imageToRemove.id]);
+        }
 
-            const updated = previous.filter(
-            (_, imageIndex) => imageIndex !== index
-            );
+        if (imageToRemove?.file && imageToRemove.preview) {
+          URL.revokeObjectURL(imageToRemove.preview);
+        }
 
-            if (
-            updated.length > 0 &&
-            !updated.some((image) => image.is_primary)
-            ) {
-            updated[0].is_primary = true;
-            }
+        const updated = previous.filter(
+          (_, imageIndex) => imageIndex !== index
+        );
 
-            return updated.map((image, imageIndex) => ({
-            ...image,
-            sort_order: imageIndex + 1,
-            }));
-            });
+        if (
+          updated.length > 0 &&
+          !updated.some((image) => image.is_primary)
+        ) {
+          updated[0].is_primary = true;
+        }
+
+        return updated.map((image, imageIndex) => ({
+          ...image,
+          sort_order: imageIndex + 1,
+        }));
+      });
     };
 
     const handleImageMetadataChange = (index, field, value) => {
@@ -422,6 +429,11 @@ const AdminProductFormPage = () => {
       const savedProduct = isEdit
         ? await updateProduct(slug, payload)
         : await createProduct(payload);
+
+      // Delete removed existing images
+      for (const imageId of removedImageIds) {
+        await deleteProductImage(imageId);
+      }
 
       // Save product images
       for (const image of images) {

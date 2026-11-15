@@ -19,6 +19,10 @@ from apps.orders.models import Order, OrderItem, OrderStatusHistory
 from apps.payments.models import Payment, PaymentAttempt, Refund
 from apps.payments.services import PaymentService, RefundService
 
+from apps.cart.models import Cart, CartItem, CustomerAddress
+
+from apps.payments.models import CheckoutPaymentSession
+
 from unittest.mock import patch
 
 import hashlib
@@ -2088,4 +2092,296 @@ class RazorpayCheckoutTests(TestCase):
         self.assertEqual(
             attempt.status,
             PaymentAttempt.AttemptStatus.SUCCESS,
+        )
+        
+@override_settings(
+    RAZORPAY_KEY_ID="rzp_test_123456",
+    RAZORPAY_KEY_SECRET="test_secret_123456",
+)
+class RazorpayPaymentFirstCheckoutTests(TestCase):
+
+    def setUp(self):
+        self.customer = User.objects.create_user(
+            username="payment_first_customer",
+            email="paymentfirst@example.com",
+            password="TestPassword123!",
+        )
+
+        self.category = Category.objects.create(
+            name="Payment First Category",
+        )
+
+        self.product = Product.objects.create(
+            name="Payment First Product",
+            sku="PAY-FIRST-001",
+            category=self.category,
+            retail_price=Decimal("100.00"),
+            selling_modes=["RETAIL"],
+            retail_moq=1,
+        )
+
+        self.inventory = Inventory.objects.create(
+            product=self.product,
+            quantity=10,
+        )
+
+        self.address = CustomerAddress.objects.create(
+            user=self.customer,
+            full_name="Test Customer",
+            phone_number="9876543210",
+            address_line_1="Test Address",
+            district="Surat",
+            city="Surat",
+            state="Gujarat",
+            pincode="395007",
+            country="India",
+            is_default=True,
+        )
+
+        self.cart = Cart.objects.create(
+            user=self.customer,
+        )
+
+        self.cart_item = CartItem.objects.create(
+            cart=self.cart,
+            product=self.product,
+            purchase_mode=CartItem.PurchaseMode.RETAIL,
+            quantity=2,
+        )
+
+    @patch("apps.payments.services.razorpay.Client")
+    def create_test_session(self, mock_client):
+        mock_client.return_value.order.create.return_value = {
+            "id": "order_payment_first_001",
+        }
+
+        session = PaymentService.create_checkout_session(
+            user=self.customer,
+            address_id=self.address.id,
+            idempotency_key="payment-first-test-001",
+        )
+
+        return session
+
+    # --------------------------------------------------
+    # TEST 1: SESSION CREATION WITHOUT ORDER
+    # --------------------------------------------------
+
+    @patch("apps.payments.services.razorpay.Client")
+    def test_checkout_session_does_not_create_order_or_deduct_stock(
+        self,
+        mock_client,
+    ):
+        mock_client.return_value.order.create.return_value = {
+            "id": "order_payment_first_001",
+        }
+
+        session = PaymentService.create_checkout_session(
+            user=self.customer,
+            address_id=self.address.id,
+            idempotency_key="payment-first-create-001",
+        )
+
+        self.inventory.refresh_from_db()
+
+        self.assertEqual(
+            session.status,
+            CheckoutPaymentSession.SessionStatus.INITIATED,
+        )
+
+        self.assertEqual(
+            session.amount,
+            Decimal("200.00"),
+        )
+
+        self.assertEqual(
+            Order.objects.filter(user=self.customer).count(),
+            0,
+        )
+
+        self.assertEqual(Payment.objects.count(), 0)
+
+        self.assertEqual(PaymentAttempt.objects.count(), 0)
+
+        self.assertEqual(self.inventory.quantity, 10)
+
+        self.assertTrue(
+            CartItem.objects.filter(
+                cart=self.cart,
+                product=self.product,
+            ).exists()
+        )
+
+        mock_client.return_value.order.create.assert_called_once()
+
+    # --------------------------------------------------
+    # TEST 2: SUCCESSFUL PAYMENT CREATES ORDER
+    # --------------------------------------------------
+
+    @patch("apps.payments.services.razorpay.Client")
+    def test_successful_payment_creates_order_and_clears_cart(
+        self,
+        mock_client,
+    ):
+        mock_client.return_value.order.create.return_value = {
+            "id": "order_payment_first_002",
+        }
+
+        mock_client.return_value.payment.fetch.return_value = {
+            "id": "pay_payment_first_002",
+            "order_id": "order_payment_first_002",
+            "amount": 20000,
+            "currency": "INR",
+            "status": "captured",
+        }
+
+        session = PaymentService.create_checkout_session(
+            user=self.customer,
+            address_id=self.address.id,
+            idempotency_key="payment-first-success-001",
+        )
+
+        # Before payment verification, no internal order exists.
+        self.assertEqual(
+            Order.objects.filter(user=self.customer).count(),
+            0,
+        )
+
+        mock_client.return_value.utility.verify_payment_signature.return_value = None
+
+        verified_session = PaymentService.verify_checkout_session(
+            razorpay_order_id="order_payment_first_002",
+            razorpay_payment_id="pay_payment_first_002",
+            razorpay_signature="valid_test_signature",
+            user=self.customer,
+        )
+
+        verified_session.refresh_from_db()
+
+        self.inventory.refresh_from_db()
+
+        self.assertEqual(
+            verified_session.status,
+            CheckoutPaymentSession.SessionStatus.SUCCESS,
+        )
+
+        self.assertIsNotNone(verified_session.order_id)
+
+        self.assertEqual(
+            Order.objects.filter(user=self.customer).count(),
+            1,
+        )
+
+        order = verified_session.order
+
+        self.assertEqual(
+            order.payment_status,
+            Order.PaymentStatus.PAID,
+        )
+
+        payment = Payment.objects.get(order=order)
+
+        self.assertEqual(
+            payment.status,
+            Payment.PaymentStatus.SUCCESS,
+        )
+
+        self.assertEqual(
+            payment.payment_method,
+            Payment.PaymentMethod.RAZORPAY,
+        )
+
+        self.assertEqual(
+            payment.gateway_payment_id,
+            "pay_payment_first_002",
+        )
+
+        self.assertEqual(
+            PaymentAttempt.objects.filter(
+                payment=payment,
+                status=PaymentAttempt.AttemptStatus.SUCCESS,
+            ).count(),
+            1,
+        )
+
+        # Two units should be deducted only after successful payment.
+        self.assertEqual(self.inventory.quantity, 8)
+
+        # Cart should be cleared after order creation.
+        self.assertEqual(
+            CartItem.objects.filter(cart=self.cart).count(),
+            0,
+        )
+
+    # --------------------------------------------------
+    # TEST 3: INVENTORY UNAVAILABLE AFTER PAYMENT CAPTURE
+    # --------------------------------------------------
+
+    @patch("apps.payments.services.razorpay.Client")
+    def test_captured_payment_with_insufficient_stock_requires_refund(
+        self,
+        mock_client,
+    ):
+        mock_client.return_value.order.create.return_value = {
+            "id": "order_payment_first_003",
+        }
+
+        mock_client.return_value.payment.fetch.return_value = {
+            "id": "pay_payment_first_003",
+            "order_id": "order_payment_first_003",
+            "amount": 20000,
+            "currency": "INR",
+            "status": "captured",
+        }
+
+        session = PaymentService.create_checkout_session(
+            user=self.customer,
+            address_id=self.address.id,
+            idempotency_key="payment-first-stock-001",
+        )
+
+        # Simulate stock being purchased by another customer.
+        self.inventory.quantity = 1
+        self.inventory.save(update_fields=["quantity"])
+
+        mock_client.return_value.utility.verify_payment_signature.return_value = None
+
+        verified_session = PaymentService.verify_checkout_session(
+            razorpay_order_id="order_payment_first_003",
+            razorpay_payment_id="pay_payment_first_003",
+            razorpay_signature="valid_test_signature",
+            user=self.customer,
+        )
+
+        verified_session.refresh_from_db()
+
+        self.inventory.refresh_from_db()
+
+        self.assertEqual(
+            verified_session.status,
+            CheckoutPaymentSession.SessionStatus.REFUND_REQUIRED,
+        )
+
+        self.assertEqual(
+            verified_session.gateway_payment_id,
+            "pay_payment_first_003",
+        )
+
+        self.assertIsNone(verified_session.order_id)
+
+        self.assertEqual(
+            Order.objects.filter(user=self.customer).count(),
+            0,
+        )
+
+        self.assertEqual(Payment.objects.count(), 0)
+
+        self.assertEqual(PaymentAttempt.objects.count(), 0)
+
+        self.assertEqual(self.inventory.quantity, 1)
+
+        # Cart must remain untouched.
+        self.assertEqual(
+            CartItem.objects.filter(cart=self.cart).count(),
+            1,
         )

@@ -109,6 +109,22 @@ class ProductImageViewSet(viewsets.ModelViewSet):
         "product"
     ).all()
     
+    def perform_destroy(self, instance):
+        public_id = instance.cloudinary_public_id
+
+        instance.delete()
+
+        if public_id:
+            try:
+                import cloudinary.uploader
+
+                cloudinary.uploader.destroy(
+                    public_id,
+                    resource_type="image"
+                )
+            except Exception:
+                pass
+    
 class ProductVideoViewSet(viewsets.ModelViewSet):
 
     serializer_class = AdminProductVideoSerializer

@@ -69,7 +69,7 @@ DATABASES = {"default": {
     "PASSWORD": env("DB_PASSWORD", default=""),
     "HOST": env("DB_HOST", default="127.0.0.1"),
     "PORT": env("DB_PORT", default="5432"),
-    "CONN_MAX_AGE": 60,
+    "CONN_MAX_AGE": 0,
 }}
 AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},

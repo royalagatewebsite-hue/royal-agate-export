@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import {
   MapPin,
   Plus,
@@ -21,6 +22,8 @@ import {
   createPaymentAttempt,
   createRazorpayOrder,
   verifyRazorpayPayment,
+  createRazorpayCheckoutSession,
+  verifyRazorpayCheckoutPayment,
 } from "../../services/paymentService";
 
 const loadRazorpayScript = () => {
@@ -41,6 +44,7 @@ const loadRazorpayScript = () => {
 };
 
 export default function CheckoutPage() {
+  const navigate = useNavigate();
   const [addresses, setAddresses] = useState([]);
   const [selectedAddress, setSelectedAddress] = useState(null);
   const [showAddressForm, setShowAddressForm] = useState(false);
@@ -273,6 +277,7 @@ export default function CheckoutPage() {
       setShowOrderConfirmation(false);
       setPendingOrder(null);
       sessionStorage.removeItem("royal_agate_pending_order");
+      navigate(`/order-success/${orderToPay.id}`);
     } catch (err) {
       setPaymentError(
         err.message ||
@@ -286,6 +291,8 @@ export default function CheckoutPage() {
   const handleRazorpayPayment = async () => {
     if (placingOrder) return;
 
+    // Existing pending order = legacy payment retry
+    // New checkout = payment-first flow
     if (!pendingOrder && !selectedAddress) {
       setPaymentError("Please select a delivery address.");
       return;
@@ -300,58 +307,144 @@ export default function CheckoutPage() {
     setPaymentError("");
 
     try {
-      // Reuse an existing pending order or create a new one.
-      let orderToPay = pendingOrder;
+      // ==========================================
+      // LEGACY PENDING ORDER PAYMENT RETRY
+      // ==========================================
 
-      if (!orderToPay) {
-        const orderResponse = await createOrder(selectedAddress, "");
-        orderToPay = orderResponse.order;
+      if (pendingOrder) {
+        const idempotencyKey =
+          typeof crypto !== "undefined" && crypto.randomUUID
+            ? crypto.randomUUID()
+            : `rae-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
 
-        if (!orderToPay?.id) {
-          throw new Error("Order ID was not returned. Please contact support.");
+        const razorpayOrder = await createRazorpayOrder({
+          orderId: pendingOrder.id,
+          idempotencyKey,
+        });
+
+        if (!razorpayOrder?.key_id || !razorpayOrder?.razorpay_order_id) {
+          throw new Error("Unable to initialize Razorpay payment.");
         }
 
-        sessionStorage.setItem(
-          "royal_agate_pending_order",
-          JSON.stringify(orderToPay)
+        const scriptLoaded = await loadRazorpayScript();
+
+        if (!scriptLoaded) {
+          throw new Error("Unable to load Razorpay Checkout.");
+        }
+
+        const address = addresses.find(
+          (item) => item.id === selectedAddress
         );
 
-        setPendingOrder(orderToPay);
+        const razorpay = new window.Razorpay({
+          key: razorpayOrder.key_id,
+          amount: razorpayOrder.amount,
+          currency: razorpayOrder.currency,
+          name: "Royal Agate Export",
+          description: `Order ${pendingOrder.order_number}`,
+          order_id: razorpayOrder.razorpay_order_id,
+
+          prefill: {
+            name: address?.full_name || "",
+            contact: address?.phone_number || "",
+          },
+
+          theme: {
+            color: "#18352B",
+          },
+
+          handler: async (response) => {
+            try {
+              const verification = await verifyRazorpayPayment({
+                razorpay_order_id: response.razorpay_order_id,
+                razorpay_payment_id: response.razorpay_payment_id,
+                razorpay_signature: response.razorpay_signature,
+              });
+
+              setPaymentAttempt(
+                verification.attempt || razorpayOrder.attempt
+              );
+
+              setPlacedOrder(pendingOrder);
+              setOnlinePaymentSuccessful(true);
+              setPendingOrder(null);
+
+              sessionStorage.removeItem("royal_agate_pending_order");
+              navigate(`/order-success/${verification.order_id}`);
+              setPaymentError("");
+            } catch (err) {
+              setPaymentError(
+                err.message ||
+                  "Payment verification is pending. Please do not pay again immediately."
+              );
+            } finally {
+              setPlacingOrder(false);
+            }
+          },
+
+          modal: {
+            ondismiss: () => {
+              setPlacingOrder(false);
+              setPaymentError(
+                "Payment was not completed. You can retry your payment."
+              );
+            },
+          },
+        });
+
+        razorpay.on("payment.failed", (response) => {
+          setPlacingOrder(false);
+          setPaymentError(
+            response.error?.description || "Payment failed. You can retry."
+          );
+        });
+
+        razorpay.open();
+        return;
       }
 
-      // Create Razorpay gateway order.
+      // ==========================================
+      // NEW PAYMENT-FIRST CHECKOUT
+      // ==========================================
+
       const idempotencyKey =
         typeof crypto !== "undefined" && crypto.randomUUID
           ? crypto.randomUUID()
           : `rae-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
 
-      const razorpayOrder = await createRazorpayOrder({
-        orderId: orderToPay.id,
+      // Step 1: Create checkout session.
+      // No internal order or stock deduction here.
+      const checkoutSession = await createRazorpayCheckoutSession({
+        addressId: selectedAddress,
         idempotencyKey,
       });
 
-      if (!razorpayOrder?.key_id || !razorpayOrder?.razorpay_order_id) {
-        throw new Error("Unable to initialize Razorpay payment.");
+      if (
+        !checkoutSession?.key_id ||
+        !checkoutSession?.razorpay_order_id
+      ) {
+        throw new Error("Unable to initialize Razorpay checkout.");
       }
 
-      // Load Razorpay Checkout script.
+      // Step 2: Load Razorpay script.
       const scriptLoaded = await loadRazorpayScript();
 
       if (!scriptLoaded) {
-        throw new Error("Unable to load Razorpay Checkout. Please try again.");
+        throw new Error("Unable to load Razorpay Checkout.");
       }
 
       const address = addresses.find(
         (item) => item.id === selectedAddress
       );
 
-      const options = {
-        key: razorpayOrder.key_id,
-        amount: razorpayOrder.amount,
-        currency: razorpayOrder.currency,
+      // Step 3: Open Razorpay.
+      const razorpay = new window.Razorpay({
+        key: checkoutSession.key_id,
+        amount: checkoutSession.amount,
+        currency: checkoutSession.currency,
         name: "Royal Agate Export",
-        description: `Order ${orderToPay.order_number}`,
-        order_id: razorpayOrder.razorpay_order_id,
+        description: "Secure checkout",
+        order_id: checkoutSession.razorpay_order_id,
 
         prefill: {
           name: address?.full_name || "",
@@ -362,27 +455,51 @@ export default function CheckoutPage() {
           color: "#18352B",
         },
 
+        // Step 4: Verify payment.
+        // Backend creates the internal order only after verification.
         handler: async (response) => {
           try {
-            const verification = await verifyRazorpayPayment({
+            const verification = await verifyRazorpayCheckoutPayment({
               razorpay_order_id: response.razorpay_order_id,
               razorpay_payment_id: response.razorpay_payment_id,
               razorpay_signature: response.razorpay_signature,
             });
 
-            setPaymentAttempt(
-              verification.attempt || razorpayOrder.attempt
-            );
+            if (verification.status === "REFUND_REQUIRED") {
+              setPaymentError(
+                "Payment was received, but your order could not be confirmed. Our team will review and process the refund."
+              );
+              return;
+            }
 
-            setPlacedOrder(orderToPay);
+            if (
+              verification.status !== "SUCCESS" ||
+              !verification.order_id
+            ) {
+              throw new Error(
+                "Payment verification is not complete yet. Please contact support before retrying."
+              );
+            }
+
+            // Actual order details returned by backend.
+            const confirmedOrder = {
+              id: verification.order_id,
+              order_number: verification.order_number,
+              total_amount: checkoutPreview.total_amount,
+            };
+
+            setPlacedOrder(confirmedOrder);
             setOnlinePaymentSuccessful(true);
-            setPendingOrder(null);
-
-            sessionStorage.removeItem("royal_agate_pending_order");
+            setPaymentAttempt(null);
             setPaymentError("");
+
+            // New payment-first flow never stores a pending order.
+            setPendingOrder(null);
+            sessionStorage.removeItem("royal_agate_pending_order");
           } catch (err) {
             setPaymentError(
-              "We received your payment response but could not verify it yet. Please do not pay again immediately. Refresh shortly or contact support."
+              err.message ||
+                "Payment was received, but verification is pending. Please do not pay again immediately."
             );
           } finally {
             setPlacingOrder(false);
@@ -393,18 +510,16 @@ export default function CheckoutPage() {
           ondismiss: () => {
             setPlacingOrder(false);
             setPaymentError(
-              "Payment was not completed. Your order is saved, so you can retry."
+              "Payment was not completed. Your cart is safe. You can try again."
             );
           },
         },
-      };
-
-      const razorpay = new window.Razorpay(options);
+      });
 
       razorpay.on("payment.failed", (response) => {
         setPlacingOrder(false);
         setPaymentError(
-          response.error?.description || "Payment failed. You can retry."
+          response.error?.description || "Payment failed. Your cart is safe. Please try again."
         );
       });
 

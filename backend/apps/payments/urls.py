@@ -11,6 +11,8 @@ from .views import (
     RazorpayOrderCreateView,
     RazorpayPaymentVerifyView,
     AdminPaymentLookupView,
+    RazorpayCheckoutSessionCreateView,
+    RazorpayCheckoutSessionVerifyView,
 
     # Refund views
     RefundListCreateView,
@@ -54,6 +56,18 @@ urlpatterns = [
         "webhooks/razorpay/",
         RazorpayWebhookView.as_view(),
         name="razorpay-webhook",
+    ),
+    
+    path(
+        "razorpay/checkout-session/",
+        RazorpayCheckoutSessionCreateView.as_view(),
+        name="razorpay-checkout-session",
+    ),
+
+    path(
+        "razorpay/checkout-verify/",
+        RazorpayCheckoutSessionVerifyView.as_view(),
+        name="razorpay-checkout-verify",
     ),
 
     # ==========================================

@@ -28,6 +28,7 @@ const RegisterPage = lazy(() => import("./pages/auth/RegisterPage"));
 // Cart & Checkout
 const CartPage = lazy(() => import("./pages/cart/CartPage"));
 const CheckoutPage = lazy(() => import("./pages/checkout/CheckoutPage"));
+const OrderSuccessPage = lazy(() => import("./pages/checkout/OrderSuccessPage"));
 
 // Customer Account
 const MyOrdersPage = lazy(() => import("./pages/account/MyOrdersPage"));
@@ -259,6 +260,16 @@ export default function App() {
                 element={
                   <ProtectedRoute allowedRoles={["customer"]}>
                     <CheckoutPage />
+                  </ProtectedRoute>
+                }
+              />
+
+              {/* Order Success */}
+              <Route
+                path="/order-success/:orderId"
+                element={
+                  <ProtectedRoute allowedRoles={["customer"]}>
+                    <OrderSuccessPage />
                   </ProtectedRoute>
                 }
               />
