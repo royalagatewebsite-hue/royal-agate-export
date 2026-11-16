@@ -1,3 +1,4 @@
+import { Link } from "react-router-dom";
 import {
   Instagram,
   Facebook,
@@ -38,7 +39,7 @@ export default function Footer() {
 
           {/* Brand */}
           <div>
-            <a href="/" className="inline-block">
+            <Link to="/" className="inline-block">
               <h2 className="font-serif text-3xl tracking-[0.12em]">
                 ROYAL AGATE
               </h2>
@@ -46,7 +47,7 @@ export default function Footer() {
               <p className="text-[9px] tracking-[0.5em] text-[#C5A477] text-center mt-2">
                 EXPORT
               </p>
-            </a>
+            </Link>
 
             <p className="text-sm leading-7 text-[#C3CEC6] mt-7 max-w-xs">
               Discover the natural beauty of gemstones and
@@ -106,12 +107,12 @@ export default function Footer() {
             <ul className="space-y-4">
               {quickLinks.map((link) => (
                 <li key={link.name}>
-                  <a
-                    href={link.href}
+                  <Link
+                    to={link.href}
                     className="text-sm text-[#C3CEC6] hover:text-[#C5A477] transition-colors"
                   >
                     {link.name}
-                  </a>
+                  </Link>
                 </li>
               ))}
             </ul>
@@ -126,12 +127,12 @@ export default function Footer() {
             <ul className="space-y-4">
               {collections.map((item) => (
                 <li key={item.name}>
-                  <a
-                    href={item.href}
+                  <Link
+                    to={item.href}
                     className="text-sm text-[#C3CEC6] hover:text-[#C5A477] transition-colors"
                   >
                     {item.name}
-                  </a>
+                  </Link>
                 </li>
               ))}
             </ul>
@@ -212,13 +213,13 @@ export default function Footer() {
 
             </div>
 
-            <a
-              href="/contact"
+            <Link
+              to="/contact"
               className="inline-flex items-center gap-2 text-xs uppercase tracking-[0.15em] text-[#C5A477] mt-8 hover:text-white transition-colors"
             >
               Contact Us
               <ArrowUpRight size={15} />
-            </a>
+            </Link>
 
           </div>
 
@@ -315,26 +316,26 @@ export default function Footer() {
 
           <div className="flex items-center gap-6">
 
-            <a
-              href="/privacy-policy"
+            <Link
+              to="/privacy-policy"
               className="text-[11px] text-[#AEBDB3] hover:text-[#C5A477] transition-colors"
             >
               Privacy Policy
-            </a>
+            </Link>
 
-            <a
-              href="/terms"
+            <Link
+              to="/terms"
               className="text-[11px] text-[#AEBDB3] hover:text-[#C5A477] transition-colors"
             >
               Terms & Conditions
-            </a>
+            </Link>
 
-            <a 
-             href="/refund-policy"
+            <Link
+             to="/refund-policy"
              className="text-[11px] text-[#AEBDB3] hover:text-[#C5A477] transition-colors"
             >
               Refund Policy
-            </a>
+            </Link>
 
           </div>
 

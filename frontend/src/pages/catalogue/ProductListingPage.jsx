@@ -189,7 +189,7 @@ export default function ProductListingPage({ categorySlug = null }) {
                 {error}
               </div>
             ) : products.length > 0 ? (
-              <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-x-7 gap-y-12">
+              <div className="grid grid-cols-2 gap-x-3 gap-y-7 sm:gap-x-5 sm:gap-y-10 xl:grid-cols-3 xl:gap-x-7 xl:gap-y-12">
                 {products.map((product) => (
                   <ProductCard
                     key={product.id}

@@ -19,7 +19,8 @@ export default function ProductCard({ product }) {
             src={image}
             alt={product.name}
             loading="lazy"
-            className="h-full w-full object-cover transition-transform duration-700 group-hover:scale-105"
+            className="h-full w-full object-cover transition-transform duration-300 sm:duration-500 sm:group-hover:scale-105"
+            decoding="async"
           />
         ) : (
           <div className="flex h-full items-center justify-center text-sm text-[#A98250]">
@@ -33,25 +34,23 @@ export default function ProductCard({ product }) {
           </span>
         )}
 
-        <span className="absolute bottom-4 right-4 flex h-10 w-10 items-center justify-center bg-[#F7F4EE] text-[#18352B] opacity-0 transition-all duration-300 group-hover:opacity-100">
-          <ArrowUpRight size={18} />
-        </span>
+        
       </Link>
 
       {/* Product Information */}
-      <div className="pt-5">
+      <div className="pt-3 sm:pt-5">
 
-        <p className="mb-2 text-[10px] uppercase tracking-[0.22em] text-[#A98250]">
+        <p className="mb-1.5 text-[9px] uppercase tracking-[0.16em] text-[#A98250] sm:mb-2 sm:text-[10px] sm:tracking-[0.22em]">
           {product.category_name}
         </p>
 
         <Link to={`/collections/${product.slug}`}>
-          <h3 className="font-serif text-xl text-[#18352B] transition-colors duration-300 group-hover:text-[#A98250]">
+          <h3 className="font-serif text-lg leading-snug text-[#18352B] transition-colors duration-200 sm:text-xl sm:group-hover:text-[#A98250]">
             {product.name}
           </h3>
         </Link>
 
-        <div className="mt-3 flex items-center justify-between gap-3">
+        <div className="mt-2 flex items-center justify-between gap-2 sm:mt-3">
 
           {hasRetail ? (
             <p className="text-sm font-medium text-[#343832]">
@@ -65,9 +64,10 @@ export default function ProductCard({ product }) {
 
           <Link
             to={`/collections/${product.slug}`}
-            className="text-[10px] uppercase tracking-[0.15em] text-[#18352B] underline underline-offset-4 transition-colors hover:text-[#A98250]"
+            aria-label={`View ${product.name}`}
+            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-[#18352B]/30 text-[#18352B] transition-colors duration-200 hover:bg-[#18352B] hover:text-white"
           >
-            Explore
+            <ArrowUpRight size={18} strokeWidth={1.5} />
           </Link>
 
         </div>

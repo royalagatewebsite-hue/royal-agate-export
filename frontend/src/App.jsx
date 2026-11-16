@@ -1,5 +1,12 @@
-import { lazy, Suspense } from "react";
-import { BrowserRouter, Routes, Route, useParams } from "react-router-dom";
+import {
+  BrowserRouter,
+  Routes,
+  Route,
+  useParams,
+  useLocation,
+} from "react-router-dom";
+
+import { useEffect, lazy, Suspense } from "react";
 
 import ProtectedRoute from "./components/auth/ProtectedRoute";
 
@@ -126,11 +133,27 @@ function CategoryListingRoute() {
   return <ProductListingPage categorySlug={categorySlug} />;
 }
 
+function ScrollToTop() {
+  const { pathname } = useLocation();
+
+  useEffect(() => {
+    window.scrollTo({
+      top: 0,
+      left: 0,
+      behavior: "instant",
+    });
+  }, [pathname]);
+
+  return null;
+}
+
 export default function App() {
   return (
     <AuthProvider>
       <CartProvider>
         <BrowserRouter>
+
+          <ScrollToTop />
           <Suspense
             fallback={
               <div className="flex min-h-[60vh] items-center justify-center bg-[#F7F4EE]">

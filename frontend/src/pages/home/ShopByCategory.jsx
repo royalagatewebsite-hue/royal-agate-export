@@ -29,14 +29,16 @@ const categoryPresentation = {
         image: "/images/categories/gemstones-jewellery.jpeg",
     },
 
-    "gemstone-decor": {
+    "home-decoration": {
+        title: "Crystal Home Decor",
         description: "Natural elegance for your spaces.",
-        image: "https://images.unsplash.com/photo-1618221195710-dd6b41faaea6?auto=format&fit=crop&w=900&q=85",
+        image: "/images/categories/crystal-home-decor.webp",
     },
 
     "crystal-collection": {
+        title: "Crystal Collections",
         description: "Discover nature's natural treasures.",
-        image: "https://images.unsplash.com/photo-1515562141207-7a88fb7ce338?auto=format&fit=crop&w=900&q=85",
+        image: "/images/categories/crystal-collections.webp",
     },
 };
 
@@ -104,7 +106,7 @@ export default function ShopByCategory() {
 
                 {/* Category Cards */}
                 {categories.length > 0 ? (
-                    <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 md:gap-6 lg:grid-cols-4">
+                    <div className="grid grid-cols-2 gap-3 sm:gap-5 md:gap-6 lg:grid-cols-4">
                         {categories.map((category) => {
                             const key = normalizeCategory(category.slug);
                             const nameKey = normalizeCategory(category.name);
@@ -135,10 +137,10 @@ export default function ShopByCategory() {
 
                                         <div className="absolute inset-0 bg-gradient-to-t from-[#14241F]/70 via-transparent to-transparent" />
 
-                                        <div className="absolute bottom-0 left-0 right-0 p-6">
+                                        <div className="absolute bottom-0 left-0 right-0 p-3 sm:p-4 md:p-6">
                                             <div className="flex items-end justify-between gap-3">
                                                 <div>
-                                                    <h3 className="font-serif text-2xl text-white">
+                                                    <h3 className="font-serif text-lg sm:text-xl md:text-2xl text-white">
                                                         {presentation.title || category.name}
                                                     </h3>
 
