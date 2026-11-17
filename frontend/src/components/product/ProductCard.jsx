@@ -45,7 +45,7 @@ export default function ProductCard({ product }) {
         </p>
 
         <Link to={`/collections/${product.slug}`}>
-          <h3 className="font-serif text-lg leading-snug text-[#18352B] transition-colors duration-200 sm:text-xl sm:group-hover:text-[#A98250]">
+          <h3 className="font-sans text-[15px] font-medium leading-snug text-[#18352B] transition-colors duration-200 sm:text-base sm:group-hover:text-[#A98250]">
             {product.name}
           </h3>
         </Link>
@@ -53,11 +53,11 @@ export default function ProductCard({ product }) {
         <div className="mt-2 flex items-center justify-between gap-2 sm:mt-3">
 
           {hasRetail ? (
-            <p className="text-sm font-medium text-[#343832]">
+            <p className="text-sm font-semibold text-[#343832]">
               ₹{Number(product.retail_price).toLocaleString("en-IN")}
             </p>
           ) : (
-            <p className="text-xs text-[#A98250]">
+            <p className="text-xs font-medium text-[#A98250]">
               Wholesale Pricing Available
             </p>
           )}
