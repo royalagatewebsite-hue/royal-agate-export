@@ -17,8 +17,9 @@ export default function FeaturedProducts() {
     async function fetchFeaturedProducts() {
       try {
         const data = await getProducts({
-            ordering: "-created_at",
-            page_size: 8,
+          is_featured: true,
+          ordering: "-created_at",
+          page_size: 48,
         });
 
         setProducts(data.results || []);
