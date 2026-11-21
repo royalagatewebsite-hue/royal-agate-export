@@ -9,17 +9,16 @@ class CanonicalSitemap(Sitemap):
     protocol = "https"
 
     def get_urls(self, page=1, site=None, protocol=None):
-        if site is None:
-            site = SimpleNamespace(
-                domain="www.royalagateexport.com"
-            )
+        site = SimpleNamespace(
+            domain="www.royalagateexport.com",
+            name="www.royalagateexport.com",
+        )
 
         return super().get_urls(
             page=page,
             site=site,
             protocol=protocol,
         )
-
 
 class StaticViewSitemap(CanonicalSitemap):
     priority = 0.7
