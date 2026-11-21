@@ -12,7 +12,10 @@ from rest_framework.exceptions import ValidationError
 from apps.orders.models import Order, OrderItem, OrderStatusHistory
 from apps.inventory.services import InventoryService
 from apps.cart.services import CartService
+from apps.shipping.models import ShippingQuote
 from apps.orders.services import OrderService
+
+from apps.orders.email_service import send_order_emails
 
 from datetime import timedelta
 
@@ -212,7 +215,12 @@ class PaymentService:
     ]
     
     @staticmethod
-    def create_checkout_session(user, address_id, idempotency_key):
+    def create_checkout_session(
+        user,
+        address_id,
+        shipping_quote_id,
+        idempotency_key,
+    ):
         """
         Create a Razorpay checkout session without creating
         an internal Order or deducting inventory.
@@ -241,6 +249,37 @@ class PaymentService:
         )
 
         address = checkout_data["address"]
+        
+        # 4. Validate shipping quote.
+        try:
+            shipping_quote = (
+                ShippingQuote.objects
+                .get(
+                    id=shipping_quote_id,
+                    user=user,
+                )
+            )
+        except ShippingQuote.DoesNotExist:
+            raise ValidationError("Invalid shipping quote.")
+
+        if shipping_quote.status != ShippingQuote.Status.QUOTED:
+            raise ValidationError("Shipping quote is no longer available.")
+
+        if shipping_quote.expires_at <= timezone.now():
+            shipping_quote.status = ShippingQuote.Status.EXPIRED
+            shipping_quote.save(update_fields=["status", "updated_at"])
+            raise ValidationError(
+                "Shipping quote has expired. Please calculate shipping again."
+            )
+
+        if (
+            shipping_quote.delivery_postcode != address.pincode
+            or shipping_quote.address_snapshot.get("address_id") != address.id
+        ):
+            raise ValidationError(
+                "Shipping quote does not match the selected address."
+            )
+            
 
         # 4. Build permanent address snapshot.
         address_snapshot = {
@@ -272,19 +311,64 @@ class PaymentService:
                 "unit_price": str(item_data["unit_price"]),
                 "subtotal": str(item_data["subtotal"]),
             })
+            
+        # 5. Validate cart snapshot against shipping quote.
+        quote_items = shipping_quote.cart_snapshot.get("items", [])
+        
+        def normalize_items(items, shipping_snapshot=False):
+            normalized = []
+        
+            for item in items:
+                normalized.append((
+                    int(item["product_id"]),
+                    str(item.get("sku") if shipping_snapshot else item.get("product_sku")),
+                    str(item["purchase_mode"]),
+                    int(item["quantity"]),
+                    Decimal(str(item["unit_price"])),
+                    Decimal(str(item["subtotal"])),
+                ))
+        
+            return sorted(normalized)
+        
+        current_cart = normalize_items(cart_snapshot_items)
+        quoted_cart = normalize_items(
+            quote_items,
+            shipping_snapshot=True,
+        )
+        
+        if (
+            current_cart != quoted_cart
+            or shipping_quote.cart_snapshot.get("total_items")
+            != checkout_data["total_items"]
+            or Decimal(str(shipping_quote.cart_snapshot.get("subtotal", "0.00")))
+            != Decimal(str(checkout_data["subtotal"]))
+        ):
+            raise ValidationError(
+                "Cart has changed. Please calculate shipping again."
+            )
+
+        # 6. Calculate final checkout amount.
+        subtotal = Decimal(str(checkout_data["subtotal"]))
+        shipping_charge = shipping_quote.shipping_charge
+        discount = Decimal("0.00")
+
+        amount = subtotal + shipping_charge - discount
+
+        if amount <= Decimal("0.00"):
+            raise ValidationError("Invalid checkout amount.")
 
         checkout_snapshot = {
             "items": cart_snapshot_items,
             "total_items": checkout_data["total_items"],
-            "subtotal": str(checkout_data["subtotal"]),
-            "shipping_charge": "0.00",
-            "discount": "0.00",
-            "total_amount": str(checkout_data["total_amount"]),
+            "subtotal": str(subtotal),
+            "shipping_quote_id": str(shipping_quote.id),
+            "shipping_charge": str(shipping_charge),
+            "discount": str(discount),
+            "total_amount": str(amount),
         }
 
-        amount = checkout_data["total_amount"]
-
         amount_in_paise = int(amount * 100)
+
 
         if amount_in_paise <= 0:
             raise ValidationError("Invalid checkout amount.")
@@ -538,6 +622,27 @@ class PaymentService:
                 )
 
                 address = checkout_data["address"]
+                
+                 # Retrieve and lock the original shipping quote.
+                shipping_quote_id = session.checkout_snapshot["shipping_quote_id"]
+
+                shipping_quote = (
+                    ShippingQuote.objects
+                    .select_for_update()
+                    .get(
+                        id=shipping_quote_id,
+                        user=user,
+                    )
+                )
+
+                # Validate shipping quote status and expiry.
+                if (
+                    shipping_quote.status != ShippingQuote.Status.QUOTED
+                    or shipping_quote.expires_at <= timezone.now()
+                    or shipping_quote.delivery_postcode != address.pincode
+                    or shipping_quote.address_snapshot.get("address_id") != address.id
+                ):
+                    raise ValidationError("Shipping quote is no longer valid.")
 
                 current_address_snapshot = {
                     "full_name": address.full_name,
@@ -567,23 +672,39 @@ class PaymentService:
                         "unit_price": str(item_data["unit_price"]),
                         "subtotal": str(item_data["subtotal"]),
                     })
+                    
+                # Recalculate the final amount using the saved quote.
+                subtotal = Decimal(str(checkout_data["subtotal"]))
+                shipping_charge = shipping_quote.shipping_charge
+                discount = Decimal(
+                    str(session.checkout_snapshot.get("discount", "0.00"))
+                )
+
+                total_amount = subtotal + shipping_charge - discount
 
                 current_checkout_snapshot = {
                     "items": current_items,
                     "total_items": checkout_data["total_items"],
-                    "subtotal": str(checkout_data["subtotal"]),
-                    "shipping_charge": "0.00",
-                    "discount": "0.00",
-                    "total_amount": str(checkout_data["total_amount"]),
+                    "subtotal": str(subtotal),
+                    "shipping_quote_id": str(shipping_quote.id),
+                    "shipping_charge": str(shipping_charge),
+                    "discount": str(discount),
+                    "total_amount": str(total_amount),
                 }
 
                 checkout_is_valid = (
                     current_address_snapshot == session.address_snapshot
                     and current_checkout_snapshot == session.checkout_snapshot
-                    and checkout_data["total_amount"] == session.amount
+                    and total_amount == session.amount
                 )
 
-            except (ValidationError, KeyError):
+            except (
+                ValidationError,
+                KeyError,
+                ShippingQuote.DoesNotExist,
+                ValueError,
+                TypeError,
+            ):
                 checkout_is_valid = False
 
             # 8. Captured payment but checkout is no longer valid.
@@ -629,7 +750,15 @@ class PaymentService:
             order = OrderService.create_order(
                 user=user,
                 address_id=session.address_snapshot["address_id"],
+                shipping_charge=shipping_quote.shipping_charge,
+                discount=Decimal(
+                    str(session.checkout_snapshot.get("discount", "0.00"))
+                ),
             )
+            
+            # Mark shipping quote as used.
+            shipping_quote.status = ShippingQuote.Status.USED
+            shipping_quote.save(update_fields=["status", "updated_at"])
 
             # 10. Lock newly created payment record.
             payment = (
@@ -706,6 +835,10 @@ class PaymentService:
                     "failure_reason",
                     "updated_at",
                 ]
+            )
+            
+            transaction.on_commit(
+                lambda order_id=order.pk: send_order_emails(order_id)
             )
 
             return session
@@ -1377,7 +1510,7 @@ class PaymentService:
                                 )
 
                             else:
-                                # Revalidate cart, address, prices and inventory.
+                                # Revalidate cart, address, prices, inventory and shipping quote.
                                 try:
                                     checkout_data = CartService.validate_checkout(
                                         user=session.user,
@@ -1385,6 +1518,27 @@ class PaymentService:
                                     )
 
                                     address = checkout_data["address"]
+
+                                    # Retrieve and lock the original shipping quote.
+                                    shipping_quote_id = session.checkout_snapshot["shipping_quote_id"]
+
+                                    shipping_quote = (
+                                        ShippingQuote.objects
+                                        .select_for_update()
+                                        .get(
+                                            id=shipping_quote_id,
+                                            user=session.user,
+                                        )
+                                    )
+
+                                    # Validate shipping quote status and expiry.
+                                    if (
+                                        shipping_quote.status != ShippingQuote.Status.QUOTED
+                                        or shipping_quote.expires_at <= timezone.now()
+                                        or shipping_quote.delivery_postcode != address.pincode
+                                        or shipping_quote.address_snapshot.get("address_id") != address.id
+                                    ):
+                                        raise ValidationError("Shipping quote is no longer valid.")
 
                                     current_address_snapshot = {
                                         "full_name": address.full_name,
@@ -1415,22 +1569,38 @@ class PaymentService:
                                             "subtotal": str(item_data["subtotal"]),
                                         })
 
+                                    # Recalculate final amount using the saved shipping quote.
+                                    subtotal = Decimal(str(checkout_data["subtotal"]))
+                                    shipping_charge = shipping_quote.shipping_charge
+                                    discount = Decimal(
+                                        str(session.checkout_snapshot.get("discount", "0.00"))
+                                    )
+
+                                    total_amount = subtotal + shipping_charge - discount
+
                                     current_checkout_snapshot = {
                                         "items": current_items,
                                         "total_items": checkout_data["total_items"],
-                                        "subtotal": str(checkout_data["subtotal"]),
-                                        "shipping_charge": "0.00",
-                                        "discount": "0.00",
-                                        "total_amount": str(checkout_data["total_amount"]),
+                                        "subtotal": str(subtotal),
+                                        "shipping_quote_id": str(shipping_quote.id),
+                                        "shipping_charge": str(shipping_charge),
+                                        "discount": str(discount),
+                                        "total_amount": str(total_amount),
                                     }
 
                                     checkout_is_valid = (
                                         current_address_snapshot == session.address_snapshot
                                         and current_checkout_snapshot == session.checkout_snapshot
-                                        and checkout_data["total_amount"] == session.amount
+                                        and total_amount == session.amount
                                     )
 
-                                except (ValidationError, KeyError):
+                                except (
+                                    ValidationError,
+                                    KeyError,
+                                    ShippingQuote.DoesNotExist,
+                                    ValueError,
+                                    TypeError,
+                                ):
                                     checkout_is_valid = False
 
                                 if not checkout_is_valid:
@@ -1474,6 +1644,16 @@ class PaymentService:
                                     order = OrderService.create_order(
                                         user=session.user,
                                         address_id=session.address_snapshot["address_id"],
+                                        shipping_charge=shipping_quote.shipping_charge,
+                                        discount=Decimal(
+                                            str(session.checkout_snapshot.get("discount", "0.00"))
+                                        ),
+                                    )
+
+                                    # Mark the shipping quote as used.
+                                    shipping_quote.status = ShippingQuote.Status.USED
+                                    shipping_quote.save(
+                                        update_fields=["status", "updated_at"]
                                     )
 
                                     payment = (
@@ -1548,6 +1728,10 @@ class PaymentService:
                                             "failure_reason",
                                             "updated_at",
                                         ]
+                                    )
+                                    
+                                    transaction.on_commit(
+                                        lambda order_id=order.pk: send_order_emails(order_id)
                                     )
 
                         # Handle failed Razorpay payment.

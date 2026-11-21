@@ -39,7 +39,13 @@ class OrderService:
 
     @staticmethod
     @transaction.atomic
-    def create_order(user, address_id, notes=""):
+    def create_order(
+        user,
+        address_id,
+        notes="",
+        shipping_charge=Decimal("0.00"),
+        discount=Decimal("0.00"),
+    ):
         # 1. Validate checkout and lock cart, products and inventory.
         checkout_data = CartService.validate_checkout(
             user=user,
@@ -54,6 +60,21 @@ class OrderService:
             f"RA-{timezone.now():%Y%m%d}-"
             f"{uuid.uuid4().hex[:12].upper()}"
         )
+        
+        # Calculate final order amount.
+        shipping_charge = Decimal(str(shipping_charge))
+        discount = Decimal(str(discount))
+
+        if shipping_charge < Decimal("0.00") or discount < Decimal("0.00"):
+            raise ValidationError(
+                "Shipping charge and discount cannot be negative."
+            )
+
+        subtotal = checkout_data["subtotal"]
+        total_amount = subtotal + shipping_charge - discount
+
+        if total_amount < Decimal("0.00"):
+            raise ValidationError("Order total cannot be negative.")
 
         # 3. Create order with a permanent shipping snapshot.
         order = Order.objects.create(
@@ -68,10 +89,10 @@ class OrderService:
             shipping_state=address.state,
             shipping_pincode=address.pincode,
             shipping_country=address.country,
-            subtotal=checkout_data["subtotal"],
-            shipping_charge=Decimal("0.00"),
-            discount=Decimal("0.00"),
-            total_amount=checkout_data["total_amount"],
+            subtotal=subtotal,
+            shipping_charge=shipping_charge,
+            discount=discount,
+            total_amount=total_amount,
             status=Order.OrderStatus.PENDING,
             payment_status=Order.PaymentStatus.PENDING,
             notes=notes,

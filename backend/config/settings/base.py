@@ -33,10 +33,11 @@ ALLOWED_HOSTS = env.list("DJANGO_ALLOWED_HOSTS", default=["localhost", "127.0.0.
 INSTALLED_APPS = [
     "django.contrib.admin", "django.contrib.auth", "django.contrib.contenttypes",
     "django.contrib.sessions", "django.contrib.messages", "django.contrib.staticfiles",
+    "django.contrib.sitemaps",
     "rest_framework", "rest_framework_simplejwt", "django_filters", "corsheaders",
     "drf_spectacular",
     "apps.accounts", "apps.catalogue", "apps.inventory", "apps.cart",
-    "apps.orders", "apps.payments", "apps.reviews", "apps.content","apps.dashboard","apps.contact",
+    "apps.orders", "apps.payments", "apps.reviews", "apps.content","apps.dashboard","apps.contact","apps.currency","apps.shipping",
     "rest_framework_simplejwt.token_blacklist",
 ]
 MIDDLEWARE = [
@@ -81,7 +82,7 @@ LANGUAGE_CODE = "en-us"
 TIME_ZONE = "Asia/Kolkata"
 USE_I18N = True
 USE_TZ = True
-STATIC_URL = "static/"
+STATIC_URL = "/static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
 MEDIA_URL = "media/"
 MEDIA_ROOT = BASE_DIR / "media"
@@ -150,3 +151,18 @@ LOGGING = {
         },
     },
 }
+
+# Email Configuration
+EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
+EMAIL_HOST = "smtp.gmail.com"
+EMAIL_PORT = 587
+EMAIL_USE_TLS = True
+
+EMAIL_HOST_USER = env("EMAIL_HOST_USER", default="")
+EMAIL_HOST_PASSWORD = env("EMAIL_HOST_PASSWORD", default="")
+
+DEFAULT_FROM_EMAIL = EMAIL_HOST_USER
+ADMIN_NOTIFICATION_EMAIL = env(
+    "ADMIN_NOTIFICATION_EMAIL",
+    default="royalagatewebsite@gmail.com"
+)

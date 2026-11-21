@@ -101,6 +101,7 @@ class RazorpayPaymentVerifySerializer(serializers.Serializer):
 class RazorpayCheckoutSessionCreateSerializer(serializers.Serializer):
 
     address_id = serializers.IntegerField(min_value=1)
+    shipping_quote_id = serializers.UUIDField(required=True)
 
     idempotency_key = serializers.CharField(
         max_length=100,

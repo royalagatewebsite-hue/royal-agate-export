@@ -11,6 +11,7 @@ import {
 
 import { useAuth } from "../../context/AuthContext";
 import { useCart } from "../../context/CartContext";
+import { useCurrency } from "../../context/CurrencyContext";
 import { getCategories } from "../../services/catalogueService";
 
 const navLinks = [
@@ -21,6 +22,45 @@ const navLinks = [
   { label: "Export", href: "/export" },
   { label: "Contact", href: "/contact" },
 ];
+
+function CurrencySelector({ compact = false }) {
+  const {
+    currency,
+    setCurrency,
+    supportedCurrencies,
+  } = useCurrency();
+
+  return (
+    <div className="relative">
+      <select
+        value={currency}
+        onChange={(e) => setCurrency(e.target.value)}
+        aria-label="Select display currency"
+        className={`
+          cursor-pointer appearance-none border border-[#DED7CA]
+          bg-[#FFFEFC] text-[#18352B] outline-none
+          transition-all hover:border-[#A98250]
+          focus:border-[#A98250] focus:ring-2 focus:ring-[#A98250]/10
+          ${compact
+            ? "min-w-[104px] rounded-full px-3 py-2 pr-8 text-[11px] shadow-sm"
+            : "rounded-full px-3 py-2 pr-8 text-[10px] tracking-wider"
+          }
+        `}
+      >
+        {Object.values(supportedCurrencies).map((item) => (
+          <option key={item.code} value={item.code}>
+            {item.flag} {item.code}
+          </option>
+        ))}
+      </select>
+
+      <ChevronDown
+        size={14}
+        className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-[#A98250]"
+      />
+    </div>
+  );
+}
 
 export default function Navbar() {
   const [menuOpen, setMenuOpen] = useState(false);
@@ -36,6 +76,7 @@ export default function Navbar() {
 
   const { user, isAuthenticated, logout } = useAuth();
   const { totalItems } = useCart();
+
 
   useEffect(() => {
     async function fetchCategories() {
@@ -180,7 +221,7 @@ export default function Navbar() {
 
           {/* Desktop Actions */}
           <div className="hidden items-center gap-4 text-[#18352B] lg:flex">
-
+            <CurrencySelector />
             <button
               type="button"
               aria-label="Search"
@@ -280,7 +321,14 @@ export default function Navbar() {
 
         </div>
 
-        
+        {/* Mobile currency bar: stays visible without opening the menu */}
+        <div className="flex items-center justify-between border-t border-[#A98250]/15 py-2.5 lg:hidden">
+          <span className="text-[9px] uppercase tracking-[0.16em] text-[#77756F]">
+            Prices displayed in
+          </span>
+          <CurrencySelector compact />
+        </div>
+
         {/* Search Panel */}
         {searchOpen && (
           <form
@@ -334,7 +382,6 @@ export default function Navbar() {
         {/* Mobile Navigation */}
         {menuOpen && (
           <nav className="flex flex-col border-t border-[#A98250]/20 py-5 lg:hidden">
-
             {navLinks.slice(0, 2).map((link) => (
               <Link
                 key={link.label}

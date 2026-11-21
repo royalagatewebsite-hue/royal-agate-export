@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>New Order Received</title>
+</head>
+<body style="margin:0; padding:20px; background-color:#f5f5f0; font-family:Arial,sans-serif; color:#333;">
+
+    <div style="max-width:650px; margin:auto; background:#ffffff; border:1px solid #e5e5dc;">
+
+        <div style="background:#173f35; padding:25px; text-align:center;">
+            <h1 style="color:#d6b56d; margin:0;">ROYAL AGATE</h1>
+            <p style="color:#ffffff; margin:8px 0 0;">New Order Notification</p>
+        </div>
+
+        <div style="padding:30px;">
+            <h2 style="color:#173f35;">New Order Received!</h2>
+
+            <p>A new order has been successfully placed on your website.</p>
+
+            <h3 style="color:#173f35;">Order Details</h3>
+
+            <p><strong>Order Number:</strong> {{ order.order_number }}</p>
+            <p><strong>Customer:</strong> {{ order.shipping_full_name }}</p>
+            <p><strong>Email:</strong> {{ order.user.email }}</p>
+            <p><strong>Phone:</strong> {{ order.shipping_phone_number }}</p>
+            <p><strong>Payment Status:</strong> {{ order.payment_status }}</p>
+            <p><strong>Order Date:</strong> {{ order.created_at }}</p>
+
+            <hr style="border:none; border-top:1px solid #eeeeee; margin:25px 0;">
+
+            <h3 style="color:#173f35;">Shipping Address</h3>
+
+            <p>
+                {{ order.shipping_address_line_1 }}<br>
+                {% if order.shipping_address_line_2 %}
+                    {{ order.shipping_address_line_2 }}<br>
+                {% endif %}
+                {{ order.shipping_district }}, {{ order.shipping_city }}<br>
+                {{ order.shipping_state }} - {{ order.shipping_pincode }}<br>
+                {{ order.shipping_country }}
+            </p>
+
+            <hr style="border:none; border-top:1px solid #eeeeee; margin:25px 0;">
+
+            <h3 style="color:#173f35;">Ordered Products</h3>
+
+            <table width="100%" cellpadding="10" cellspacing="0" style="border-collapse:collapse;">
+                <thead>
+                    <tr style="background:#f5f5f0;">
+                        <th align="left">Product</th>
+                        <th align="center">Qty</th>
+                        <th align="right">Price</th>
+                        <th align="right">Subtotal</th>
+                    </tr>
+                </thead>
+
+                <tbody>
+                    {% for item in items %}
+                    <tr>
+                        <td style="border-bottom:1px solid #eeeeee;">
+                            {{ item.product_name }}<br>
+                            <small>SKU: {{ item.product_sku }}</small>
+                        </td>
+                        <td align="center" style="border-bottom:1px solid #eeeeee;">
+                            {{ item.quantity }}
+                        </td>
+                        <td align="right" style="border-bottom:1px solid #eeeeee;">
+                            ₹{{ item.unit_price }}
+                        </td>
+                        <td align="right" style="border-bottom:1px solid #eeeeee;">
+                            ₹{{ item.subtotal }}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+
+            <div style="margin-top:25px; text-align:right;">
+                <p>Subtotal: ₹{{ order.subtotal }}</p>
+                <p>Shipping: ₹{{ order.shipping_charge }}</p>
+                <p>Discount: ₹{{ order.discount }}</p>
+
+                <h2 style="color:#173f35;">
+                    Total: ₹{{ order.total_amount }}
+                </h2>
+            </div>
+
+            <p style="margin-top:30px;">
+                Please log in to your admin dashboard to manage this order.
+            </p>
+        </div>
+
+        <div style="background:#173f35; padding:18px; text-align:center;">
+            <p style="color:#ffffff; margin:0; font-size:12px;">
+                © Royal Agate Export. All rights reserved.
+            </p>
+        </div>
+
+    </div>
+
+</body>
+</html>

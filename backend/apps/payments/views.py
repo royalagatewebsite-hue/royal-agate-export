@@ -182,6 +182,7 @@ class RazorpayCheckoutSessionCreateView(APIView):
             user=request.user,
             address_id=serializer.validated_data["address_id"],
             idempotency_key=serializer.validated_data["idempotency_key"],
+            shipping_quote_id=serializer.validated_data["shipping_quote_id"],
         )
 
         return Response(

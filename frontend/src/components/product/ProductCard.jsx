@@ -1,8 +1,11 @@
 import { Link } from "react-router-dom";
 import { ArrowUpRight } from "lucide-react";
+import { useCurrency } from "../../context/CurrencyContext";
 
 export default function ProductCard({ product }) {
   const image = product.primary_image_url;
+
+  const { formatPrice } = useCurrency();
 
   const hasRetail = product.selling_modes?.includes("RETAIL");
 
@@ -54,7 +57,7 @@ export default function ProductCard({ product }) {
 
           {hasRetail ? (
             <p className="text-sm font-semibold text-[#343832]">
-              ₹{Number(product.retail_price).toLocaleString("en-IN")}
+              {formatPrice(product.retail_price)}
             </p>
           ) : (
             <p className="text-xs font-medium text-[#A98250]">

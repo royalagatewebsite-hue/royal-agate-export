@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useParams, useNavigate, useLocation } from "react-router-dom";
 import { useAuth } from "../../context/AuthContext";
 import { useCart } from "../../context/CartContext";
+import { useCurrency } from "../../context/CurrencyContext";
 import { getProductBySlug } from "../../services/catalogueService";
 import ProductReviews from "../../components/reviews/ProductReviews";
 import {
@@ -15,6 +16,8 @@ import {
 
 export default function ProductDetailPage() {
   const { slug } = useParams();
+
+  const { formatPrice } = useCurrency();
 
   const navigate = useNavigate();
   const location = useLocation();
@@ -86,6 +89,259 @@ export default function ProductDetailPage() {
 
       fetchProduct();
     }, [slug]);
+
+  // Dynamic Product SEO
+  useEffect(() => {
+    if (!product) return;
+
+    const previousTitle = document.title;
+
+    const productSlug = product.slug || slug;
+    const canonicalUrl =
+      `https://www.royalagateexport.com/collections/${productSlug}`;
+
+    const cleanDescription = (
+      product.short_description ||
+      product.description ||
+      `${product.name} from Royal Agate Export.`
+    )
+      .replace(/<[^>]*>/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 160);
+
+    document.title = `${product.name} | Royal Agate Export`;
+
+    const cleanupFunctions = [];
+
+    function updateMeta(attribute, key, content) {
+      if (!content) return;
+
+      let element = document.head.querySelector(
+        `meta[${attribute}="${key}"]`
+      );
+
+      const existed = Boolean(element);
+
+      if (!element) {
+        element = document.createElement("meta");
+        element.setAttribute(attribute, key);
+        document.head.appendChild(element);
+      }
+
+      const previousContent = element.getAttribute("content");
+
+      element.setAttribute("content", content);
+
+      cleanupFunctions.push(() => {
+        if (existed) {
+          element.setAttribute(
+            "content",
+            previousContent || ""
+          );
+        } else {
+          element.remove();
+        }
+      });
+    }
+
+    // Meta Description
+    updateMeta(
+      "name",
+      "description",
+      cleanDescription
+    );
+
+    updateMeta(
+      "name",
+      "robots",
+      "index, follow"
+    );
+
+    // Open Graph
+    updateMeta(
+      "property",
+      "og:type",
+      "product"
+    );
+
+    updateMeta(
+      "property",
+      "og:title",
+      `${product.name} | Royal Agate Export`
+    );
+
+    updateMeta(
+      "property",
+      "og:description",
+      cleanDescription
+    );
+
+    updateMeta(
+      "property",
+      "og:url",
+      canonicalUrl
+    );
+
+    // Twitter
+    updateMeta(
+      "name",
+      "twitter:card",
+      "summary_large_image"
+    );
+
+    updateMeta(
+      "name",
+      "twitter:title",
+      `${product.name} | Royal Agate Export`
+    );
+
+    updateMeta(
+      "name",
+      "twitter:description",
+      cleanDescription
+    );
+
+    // Canonical URL
+    let canonicalElement =
+      document.querySelector('link[rel="canonical"]');
+
+    const canonicalExisted = Boolean(canonicalElement);
+
+    if (!canonicalElement) {
+      canonicalElement = document.createElement("link");
+      canonicalElement.setAttribute("rel", "canonical");
+      document.head.appendChild(canonicalElement);
+    }
+
+    const previousCanonical =
+      canonicalElement.getAttribute("href");
+
+    canonicalElement.setAttribute(
+      "href",
+      canonicalUrl
+    );
+
+    cleanupFunctions.push(() => {
+      if (canonicalExisted) {
+        canonicalElement.setAttribute(
+          "href",
+          previousCanonical || ""
+        );
+      } else {
+        canonicalElement.remove();
+      }
+    });
+
+    // Product Images
+    const productImages = (product.images || [])
+      .map((image) => image.image_url)
+      .filter(Boolean)
+      .map((imageUrl) => {
+        try {
+          return new URL(
+            imageUrl,
+            window.location.origin
+          ).href;
+        } catch {
+          return null;
+        }
+      })
+      .filter(Boolean);
+
+    if (productImages.length > 0) {
+      updateMeta(
+        "property",
+        "og:image",
+        productImages[0]
+      );
+
+      updateMeta(
+        "name",
+        "twitter:image",
+        productImages[0]
+      );
+    }
+
+    // Product Structured Data (JSON-LD)
+
+    const isRetailMode = selectedMode === "RETAIL";
+
+    const offerPrice = Number(
+      isRetailMode
+        ? product.retail_price
+        : product.wholesale_price
+    );
+
+    const availabilityField = isRetailMode
+      ? "retail_available"
+      : "wholesale_available";
+
+    const isModeAvailable = product[availabilityField];
+
+    const productOffer =
+      Number.isFinite(offerPrice) && offerPrice > 0
+        ? {
+            "@type": "Offer",
+            url: canonicalUrl,
+            priceCurrency: "INR",
+            price: offerPrice.toFixed(2),
+
+            ...(typeof isModeAvailable === "boolean"
+              ? {
+                  availability: isModeAvailable
+                    ? "https://schema.org/InStock"
+                    : "https://schema.org/OutOfStock",
+                }
+              : {}),
+
+            seller: {
+              "@type": "Organization",
+              name: "Royal Agate Export",
+            },
+          }
+        : undefined;
+
+    const productSchema = {
+      "@context": "https://schema.org",
+      "@type": "Product",
+      name: product.name,
+      description: cleanDescription,
+      image: productImages,
+      sku: product.sku || undefined,
+      category: product.category_name || undefined,
+
+      brand: {
+        "@type": "Brand",
+        name: "Royal Agate Export",
+      },
+
+      url: canonicalUrl,
+
+      ...(productOffer
+        ? { offers: productOffer }
+        : {}),
+    };
+
+    const schemaScript = document.createElement("script");
+
+    schemaScript.type = "application/ld+json";
+    schemaScript.id = "product-json-ld";
+    schemaScript.textContent = JSON.stringify(
+      productSchema
+    );
+
+    document.head.appendChild(schemaScript);
+
+    // Cleanup when leaving product page
+    return () => {
+      document.title = previousTitle;
+
+      cleanupFunctions.forEach((cleanup) => cleanup());
+
+      schemaScript.remove();
+    };
+  }, [product, slug, selectedMode]);
 
   if (loading) {
     return (
@@ -400,7 +656,7 @@ export default function ProductDetailPage() {
               </p>
 
               <h2 className="mt-2 text-3xl font-medium text-[#18352B]">
-                ₹{Number(price || 0).toLocaleString("en-IN")}
+                {formatPrice(price)}
               </h2>
             </div>
 

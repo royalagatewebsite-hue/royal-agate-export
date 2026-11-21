@@ -84,6 +84,183 @@ export default function ProductListingPage({ categorySlug = null }) {
     return () => clearTimeout(delay);
   }, [filters, currentPage, selectedCategory?.id, categorySlug]);
 
+  // Dynamic Category SEO
+  useEffect(() => {
+    // Only apply this SEO to category-specific pages
+    if (!categorySlug || !selectedCategory) return;
+
+    const previousTitle = document.title;
+
+    const categoryName = selectedCategory.name;
+
+    const categoryDescription = (
+      selectedCategory.description ||
+      `Explore ${categoryName} at Royal Agate Export. Discover our premium collection of natural gemstones and jewellery.`
+    )
+      .replace(/<[^>]*>/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 160);
+
+    const canonicalUrl =
+      `https://www.royalagateexport.com/category/${categorySlug}`;
+
+    document.title = `${categoryName} | Royal Agate Export`;
+
+    const cleanupFunctions = [];
+
+    function updateMeta(attribute, key, content) {
+      if (!content) return;
+
+      let element = document.head.querySelector(
+        `meta[${attribute}="${key}"]`
+      );
+
+      const existed = Boolean(element);
+
+      if (!element) {
+        element = document.createElement("meta");
+        element.setAttribute(attribute, key);
+        document.head.appendChild(element);
+      }
+
+      const previousContent = element.getAttribute("content");
+
+      element.setAttribute("content", content);
+
+      cleanupFunctions.push(() => {
+        if (existed) {
+          element.setAttribute(
+            "content",
+            previousContent || ""
+          );
+        } else {
+          element.remove();
+        }
+      });
+    }
+
+    // Meta Description
+    updateMeta(
+      "name",
+      "description",
+      categoryDescription
+    );
+
+    updateMeta(
+      "name",
+      "robots",
+      "index, follow"
+    );
+
+    // Open Graph
+    updateMeta(
+      "property",
+      "og:type",
+      "website"
+    );
+
+    updateMeta(
+      "property",
+      "og:title",
+      `${categoryName} | Royal Agate Export`
+    );
+
+    updateMeta(
+      "property",
+      "og:description",
+      categoryDescription
+    );
+
+    updateMeta(
+      "property",
+      "og:url",
+      canonicalUrl
+    );
+
+    // Twitter
+    updateMeta(
+      "name",
+      "twitter:card",
+      "summary_large_image"
+    );
+
+    updateMeta(
+      "name",
+      "twitter:title",
+      `${categoryName} | Royal Agate Export`
+    );
+
+    updateMeta(
+      "name",
+      "twitter:description",
+      categoryDescription
+    );
+
+    // Canonical URL
+    let canonicalElement =
+      document.querySelector('link[rel="canonical"]');
+
+    const canonicalExisted = Boolean(canonicalElement);
+
+    if (!canonicalElement) {
+      canonicalElement = document.createElement("link");
+      canonicalElement.setAttribute("rel", "canonical");
+      document.head.appendChild(canonicalElement);
+    }
+
+    const previousCanonical =
+      canonicalElement.getAttribute("href");
+
+    canonicalElement.setAttribute(
+      "href",
+      canonicalUrl
+    );
+
+    cleanupFunctions.push(() => {
+      if (canonicalExisted) {
+        canonicalElement.setAttribute(
+          "href",
+          previousCanonical || ""
+        );
+      } else {
+        canonicalElement.remove();
+      }
+    });
+
+    // Category Structured Data
+    const categorySchema = {
+      "@context": "https://schema.org",
+      "@type": "CollectionPage",
+      name: categoryName,
+      description: categoryDescription,
+      url: canonicalUrl,
+      isPartOf: {
+        "@type": "WebSite",
+        name: "Royal Agate Export",
+        url: "https://www.royalagateexport.com",
+      },
+    };
+
+    const schemaScript = document.createElement("script");
+
+    schemaScript.type = "application/ld+json";
+    schemaScript.id = "category-json-ld";
+    schemaScript.textContent = JSON.stringify(
+      categorySchema
+    );
+
+    document.head.appendChild(schemaScript);
+
+    return () => {
+      document.title = previousTitle;
+
+      cleanupFunctions.forEach((cleanup) => cleanup());
+
+      schemaScript.remove();
+    };
+  }, [categorySlug, selectedCategory]);
+
   function handleFilterChange(name, value) {
     setCurrentPage(1);
 

@@ -12,6 +12,7 @@ import ProtectedRoute from "./components/auth/ProtectedRoute";
 
 import { AuthProvider } from "./context/AuthContext";
 import { CartProvider } from "./context/CartContext";
+import { CurrencyProvider } from "./context/CurrencyContext";
 
 // Customer Layout
 const CustomerLayout = lazy(() => import("./pages/CustomerLayout"));
@@ -244,7 +245,13 @@ export default function App() {
             </Route>
 
             {/* CUSTOMER WEBSITE - Separate Layout */}
-            <Route element={<CustomerLayout />}>
+            <Route
+              element={
+                <CurrencyProvider>
+                  <CustomerLayout />
+                </CurrencyProvider>
+              }
+            >
 
               <Route path="/" element={<HomePage />} />
 

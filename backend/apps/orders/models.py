@@ -378,3 +378,60 @@ class OrderStatusHistory(models.Model):
 
     def __str__(self):
         return f"{self.order.order_number} - {self.new_status}"
+
+class OrderEmailNotification(models.Model):
+
+    class NotificationType(models.TextChoices):
+        ADMIN = "ADMIN", "Admin Notification"
+        CUSTOMER = "CUSTOMER", "Customer Confirmation"
+
+    class NotificationStatus(models.TextChoices):
+        PENDING = "PENDING", "Pending"
+        SENDING = "SENDING", "Sending"
+        SENT = "SENT", "Sent"
+        FAILED = "FAILED", "Failed"
+
+    order = models.ForeignKey(
+        Order,
+        on_delete=models.CASCADE,
+        related_name="email_notifications",
+    )
+
+    notification_type = models.CharField(
+        max_length=20,
+        choices=NotificationType.choices,
+    )
+
+    status = models.CharField(
+        max_length=20,
+        choices=NotificationStatus.choices,
+        default=NotificationStatus.PENDING,
+    )
+
+    attempts = models.PositiveIntegerField(default=0)
+
+    last_error = models.TextField(blank=True)
+
+    sent_at = models.DateTimeField(
+        null=True,
+        blank=True,
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+        constraints = [
+            models.UniqueConstraint(
+                fields=["order", "notification_type"],
+                name="unique_order_email_notification",
+            ),
+        ]
+
+    def __str__(self):
+        return (
+            f"{self.order.order_number} - "
+            f"{self.notification_type} - {self.status}"
+        )

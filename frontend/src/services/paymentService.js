@@ -69,12 +69,14 @@ const RAZORPAY_CHECKOUT_VERIFY_ENDPOINT =
 // Create checkout session without creating an internal order
 export const createRazorpayCheckoutSession = async ({
   addressId,
+  shippingQuoteId,
   idempotencyKey,
 }) => {
   return apiRequest(RAZORPAY_CHECKOUT_SESSION_ENDPOINT, {
     method: "POST",
     body: {
       address_id: addressId,
+      shipping_quote_id: shippingQuoteId,
       idempotency_key: idempotencyKey,
     },
   });
@@ -172,3 +174,4 @@ export const getAdminPaymentById = async (paymentId) => {
     `${ADMIN_PAYMENT_LOOKUP_ENDPOINT}${paymentId}/`
   );
 };
+

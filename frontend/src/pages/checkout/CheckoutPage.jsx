@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { useCurrency } from "../../context/CurrencyContext";
 import {
   MapPin,
   Plus,
@@ -18,6 +19,7 @@ import {
   getCheckoutPreview,
 } from "../../services/addressService";
 import { createOrder } from "../../services/orderService";
+import { createShippingQuote } from "../../services/shippingService";
 import {
   createPaymentAttempt,
   createRazorpayOrder,
@@ -45,6 +47,22 @@ const loadRazorpayScript = () => {
 
 export default function CheckoutPage() {
   const navigate = useNavigate();
+  const { currency, formatPrice, ratesLoading, ratesError } = useCurrency();
+
+  // Checkout amounts returned by the backend are always in INR.
+  // Convert only for display; order/payment amounts remain INR.
+  const formatCheckoutPrice = (amount) => {
+    const numericAmount = Number(amount ?? 0);
+
+    if (currency !== "INR" && (ratesLoading || ratesError)) {
+      return `₹${numericAmount.toLocaleString("en-IN", {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+      })}`;
+    }
+
+    return formatPrice(numericAmount);
+  };
   const [addresses, setAddresses] = useState([]);
   const [selectedAddress, setSelectedAddress] = useState(null);
   const [showAddressForm, setShowAddressForm] = useState(false);
@@ -73,8 +91,13 @@ export default function CheckoutPage() {
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewError, setPreviewError] = useState("");
 
+  // Shipping Quote
+  const [shippingQuote, setShippingQuote] = useState(null);
+  const [shippingLoading, setShippingLoading] = useState(false);
+  const [shippingError, setShippingError] = useState("");
+
   // Payment and order placement
-  const [paymentMethod, setPaymentMethod] = useState("CASH");
+  const [paymentMethod, setPaymentMethod] = useState("RAZORPAY");
   const [placingOrder, setPlacingOrder] = useState(false);
   const [paymentError, setPaymentError] = useState("");
   const [showOrderConfirmation, setShowOrderConfirmation] = useState(false);
@@ -193,25 +216,46 @@ export default function CheckoutPage() {
   const handleCheckoutPreview = async (addressId) => {
     if (!addressId) {
       setCheckoutPreview(null);
+      setShippingQuote(null);
       setPreviewError("Please select a delivery address.");
+      setShippingError("");
       return;
     }
 
-    try {
-      setPreviewLoading(true);
-      setPreviewError("");
-      setCheckoutPreview(null);
+    setPreviewLoading(true);
+    setShippingLoading(true);
 
-      const response = await getCheckoutPreview(addressId);
+    setPreviewError("");
+    setShippingError("");
 
-      setCheckoutPreview(response);
-    } catch (err) {
+    setCheckoutPreview(null);
+    setShippingQuote(null);
+
+    const [previewResult, shippingResult] = await Promise.allSettled([
+      getCheckoutPreview(addressId),
+      createShippingQuote(addressId),
+    ]);
+
+    if (previewResult.status === "fulfilled") {
+      setCheckoutPreview(previewResult.value);
+    } else {
       setPreviewError(
-        err.message || "Unable to generate checkout preview."
+        previewResult.reason?.message ||
+          "Unable to generate checkout preview."
       );
-    } finally {
-      setPreviewLoading(false);
+  }
+
+    if (shippingResult.status === "fulfilled") {
+      setShippingQuote(shippingResult.value?.data || null);
+    } else {
+      setShippingError(
+        shippingResult.reason?.message ||
+          "Unable to calculate shipping charges."
+      );
     }
+
+    setPreviewLoading(false);
+    setShippingLoading(false);
   };
 
   // Refresh preview whenever selected address changes
@@ -300,6 +344,13 @@ export default function CheckoutPage() {
 
     if (!pendingOrder && !checkoutPreview?.items?.length) {
       setPaymentError("Your cart is empty or checkout preview is unavailable.");
+      return;
+    }
+
+    if (!pendingOrder && !shippingQuote?.quote_id) {
+      setPaymentError(
+        "Shipping charges are not available. Please refresh your shipping quote."
+      );
       return;
     }
 
@@ -416,6 +467,7 @@ export default function CheckoutPage() {
       // No internal order or stock deduction here.
       const checkoutSession = await createRazorpayCheckoutSession({
         addressId: selectedAddress,
+        shippingQuoteId: shippingQuote.quote_id,
         idempotencyKey,
       });
 
@@ -485,7 +537,10 @@ export default function CheckoutPage() {
             const confirmedOrder = {
               id: verification.order_id,
               order_number: verification.order_number,
-              total_amount: checkoutPreview.total_amount,
+              total_amount:
+                Number(checkoutPreview.subtotal || 0) +
+                Number(shippingQuote?.shipping_charge || 0) -
+                Number(checkoutPreview.discount || 0),
             };
 
             setPlacedOrder(confirmedOrder);
@@ -904,21 +959,10 @@ export default function CheckoutPage() {
                   Your order is saved. Complete the payment step below to avoid creating a duplicate order.
                 </p>
                 <p className="mt-3 text-sm font-medium text-[#18352B]">
-                  Order total: ₹{Number(pendingOrder.total_amount).toLocaleString("en-IN")}
+                  Order total: {formatCheckoutPrice(pendingOrder.total_amount)}
                 </p>
 
                 <div className="mt-5 grid grid-cols-1 gap-3">
-                  <button
-                    type="button"
-                    onClick={() => setPaymentMethod("CASH")}
-                    className={`border p-3 text-sm ${
-                      paymentMethod === "CASH"
-                        ? "border-[#18352B] bg-[#EAE4D9] text-[#18352B]"
-                        : "border-[#DED7CA] bg-white text-[#77756F]"
-                    }`}
-                  >
-                    Cash on Delivery (COD)
-                  </button>
 
                   <button
                       type="button"
@@ -1026,7 +1070,7 @@ export default function CheckoutPage() {
                         </p>
 
                         <p className="mt-2 text-sm text-[#252522]">
-                          ₹{Number(item.subtotal).toLocaleString("en-IN")}
+                          {formatCheckoutPrice(item.subtotal)}
                         </p>
                       </div>
                     </div>
@@ -1044,9 +1088,51 @@ export default function CheckoutPage() {
                   <div className="flex justify-between text-sm text-[#77756F]">
                     <span>Subtotal</span>
                     <span>
-                      ₹{Number(checkoutPreview.subtotal).toLocaleString("en-IN")}
+                      {formatCheckoutPrice(checkoutPreview.subtotal)}
                     </span>
                   </div>
+
+                  <div className="flex justify-between text-sm text-[#77756F]">
+                    <span>Shipping Charges</span>
+
+                    <span>
+                      {shippingLoading ? (
+                        "Calculating..."
+                      ) : shippingQuote ? (
+                        formatCheckoutPrice(shippingQuote.shipping_charge)
+                      ) : (
+                        "Unavailable"
+                      )}
+                    </span>
+                  </div>
+
+                  {shippingQuote && (
+                    <div className="border-b border-[#DED7CA] pb-4 text-xs text-[#77756F]">
+                      <p>Courier: {shippingQuote.courier_name}</p>
+
+                      {shippingQuote.estimated_delivery_days && (
+                        <p className="mt-1">
+                          Estimated delivery: {shippingQuote.estimated_delivery_days} days
+                        </p>
+                      )}
+                    </div>
+                  )}
+
+                  {shippingError && (
+                    <div className="flex items-start gap-2 text-xs text-red-600">
+                      <AlertCircle size={15} className="shrink-0" />
+                      <span>{shippingError}</span>
+                    </div>
+                  )}
+
+                  {Number(checkoutPreview.discount || 0) > 0 && (
+                    <div className="flex justify-between text-sm text-green-700">
+                      <span>Discount</span>
+                      <span>
+                        -{formatCheckoutPrice(checkoutPreview.discount)}
+                      </span>
+                    </div>
+                  )}
 
                   <div className="flex justify-between border-t border-[#DED7CA] pt-5">
                     <span className="font-medium text-[#18352B]">
@@ -1054,7 +1140,11 @@ export default function CheckoutPage() {
                     </span>
 
                     <span className="font-serif text-xl text-[#18352B]">
-                      ₹{Number(checkoutPreview.total_amount).toLocaleString("en-IN")}
+                      {formatCheckoutPrice(
+                        Number(checkoutPreview.subtotal || 0) +
+                        Number(shippingQuote?.shipping_charge || 0) -
+                        Number(checkoutPreview.discount || 0)
+                      )}
                     </span>
                   </div>
 
@@ -1065,6 +1155,16 @@ export default function CheckoutPage() {
                   Prices and inventory validated.
                 </div>
 
+                <p className="mt-3 text-xs leading-5 text-[#77756F]">
+                  {currency === "INR"
+                    ? "Prices are displayed in INR."
+                    : ratesLoading
+                      ? "Loading currency conversion. Prices temporarily shown in INR."
+                      : ratesError
+                        ? "Currency conversion is unavailable. Prices are shown in INR."
+                        : `Prices are displayed in ${currency} for convenience. Your payment will be charged in INR.`}
+                </p>
+
                 {/* Payment Method */}
                 <div className="mt-8 border-t border-[#DED7CA] pt-6">
                   <h3 className="font-serif text-xl text-[#18352B]">
@@ -1072,28 +1172,6 @@ export default function CheckoutPage() {
                   </h3>
 
                   <div className="mt-4 grid grid-cols-1 gap-3">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setPaymentMethod("CASH");
-                        setPaymentError("");
-                      }}
-                      className={`flex items-center gap-3 border p-4 text-left transition ${
-                        paymentMethod === "CASH"
-                          ? "border-[#18352B] bg-[#EAE4D9]"
-                          : "border-[#DED7CA] bg-white hover:border-[#A98250]"
-                      }`}
-                    >
-                      <Banknote size={20} className="text-[#A98250]" />
-                      <span>
-                        <span className="block text-sm font-medium text-[#18352B]">
-                          Cash on Delivery (COD)
-                        </span>
-                        <span className="mt-1 block text-xs text-[#77756F]">
-                          Pay when your order is delivered
-                        </span>
-                      </span>
-                    </button>
 
                     <button
                       type="button"
@@ -1142,7 +1220,16 @@ export default function CheckoutPage() {
                         handleRazorpayPayment();
                       }
                     }}
-                    disabled={placingOrder || previewLoading || (!pendingOrder && !checkoutPreview)}
+                    disabled={
+                      placingOrder ||
+                      previewLoading ||
+                      (!pendingOrder && !checkoutPreview) ||
+                      (
+                        paymentMethod === "RAZORPAY" &&
+                        !pendingOrder &&
+                        (shippingLoading || !shippingQuote?.quote_id)
+                      )
+                    }
                     className="mt-6 flex w-full items-center justify-center gap-3 bg-[#18352B] px-6 py-4 text-xs uppercase tracking-[0.15em] text-white transition hover:bg-[#A98250] disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     {placingOrder ? (
@@ -1196,7 +1283,7 @@ export default function CheckoutPage() {
                 <span className="text-[#77756F] text-sm">Order Total</span>
 
                 <span className="font-serif text-xl text-[#18352B]">
-                  ₹{Number(checkoutPreview?.total_amount || 0).toLocaleString("en-IN")}
+                  {formatCheckoutPrice(checkoutPreview?.total_amount || 0)}
                 </span>
               </div>
 
