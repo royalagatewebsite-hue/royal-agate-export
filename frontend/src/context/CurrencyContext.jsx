@@ -26,23 +26,11 @@ export const SUPPORTED_CURRENCIES = {
     symbol: "$",
     flag: "🇺🇸",
   },
-  EUR: {
-    code: "EUR",
-    name: "Euro",
-    symbol: "€",
-    flag: "🇪🇺",
-  },
   GBP: {
     code: "GBP",
     name: "British Pound",
     symbol: "£",
     flag: "🇬🇧",
-  },
-  AED: {
-    code: "AED",
-    name: "UAE Dirham",
-    symbol: "د.إ",
-    flag: "🇦🇪",
   },
 };
 
